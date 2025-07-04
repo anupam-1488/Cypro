@@ -39,6 +39,7 @@
     "dev:with-types": "npm run type-check && vite"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.50.2",
     "@voilajsx/uikit": "latest",
     "lucide-react": "^0.516.0",
     "react": "^18.3.1",
@@ -47,9 +48,9 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.10",
     "@types/chrome": "^0.0.270",
+    "@types/node": "^20.0.0",
     "@types/react": "^18.2.15",
     "@types/react-dom": "^18.2.7",
-    "@types/node": "^20.0.0",
     "@vitejs/plugin-react": "^4.5.2",
     "concurrently": "^8.2.2",
     "typescript": "^5.0.2",

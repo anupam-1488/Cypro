@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Comet Extension",
+  "name": "Cyepro v6",
   "version": "1.0.0",
   "description": "Extension built with Comet Framework",
 
-  "permissions": ["storage", "activeTab", "scripting", "downloads"],
+  "permissions": ["storage", "activeTab", "scripting", "downloads","tabs"],
 
   "background": {
     "service_worker": "service-worker.js",
@@ -16,7 +16,7 @@
       "matches": ["<all_urls>"],
       "js": ["content-script.js"],
       "run_at": "document_idle",
-      "all_frames": false
+      "all_frames": true
     }
   ],
 

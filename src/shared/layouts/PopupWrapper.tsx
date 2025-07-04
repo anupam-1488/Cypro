@@ -91,7 +91,7 @@ export default function PopupWrapper({
       debugLog('info', '🔍 Loading app configuration');
       const appName = await storage.get('app-name', 'Comet Extension');
       const appIcon = await storage.get('app-icon', 'Zap');
-      const popupOverrideLogoText = await storage.get('popup-logoOverrideText', 'Comet One'); 
+      const popupOverrideLogoText = await storage.get('popup-logoOverrideText', 'Cyepro AI'); 
 
       debugLog('info', '✅ App configuration loaded:', { appName, appIcon, popupOverrideLogoText });
 
@@ -127,7 +127,7 @@ export default function PopupWrapper({
       setAppConfig({
         appName: 'Comet Extension',
         appIcon: 'Zap',
-        popupOverrideLogoText: 'Comet One'
+        popupOverrideLogoText: 'Cyepro AI'
       });
       setIsEnabled(true);
       setActiveTab('');

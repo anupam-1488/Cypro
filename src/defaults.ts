@@ -13,7 +13,7 @@ const defaults = {
   'debug-enabled': false, // Toggle all debug logs
 
   // App Configuration
-  'app-name': 'Comet One',
+  'app-name': 'Cyepro AI',
   'app-version': '1.0.0',
   'app-description': 'Minimal but powerful Chrome extension framework built with React and UIKit',
   'app-author': 'Your Name',

@@ -43,7 +43,7 @@
     "types/**/*",
     "vite.config.ts", 
     "vite.content-script.config.ts"
-  ],
+, "public/hello-world", "public/quote-generator", "public/page-analyzer" , "public/customer", "public/debug" ],
   "exclude": [
     "node_modules",
     "dist"

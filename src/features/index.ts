@@ -85,21 +85,22 @@ export interface ModuleConfig {
 // 🚀 AUTO-DISCOVERED ACTIVE FEATURES - Generated at build time
 // ============================================================================
 
-export { default as helloWorld } from './hello-world/index.js';
-export { default as pageAnalyzer } from './page-analyzer/index.js';
+export { default as aiScan } from './ai-scan/index.js';
+export { default as aisuggestAutofill } from './aisuggest-autofill/index.js';
+export { default as profile } from './profile/index.js';
 
 // ============================================================================
 // 💤 DISABLED FEATURES (underscore prefix)
 // To enable any feature: Remove underscore from folder name
 // ============================================================================
-// _quote-generator (disabled - remove underscore to enable)
 
 
+// No disabled features
 
 // ============================================================================
-// Total features: 2
-// Disabled features: 1
-// Last generated: 2025-06-23T02:11:31.102Z
+// Total features: 3
+// Disabled features: 0
+// Last generated: 2025-07-04T04:48:56.331Z
 // 
 // 🚀 Quick Commands:
 // Enable feature:  mv src/features/_feature-name src/features/feature-name
