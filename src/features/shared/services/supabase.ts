@@ -154,14 +154,15 @@ export const appKitHelpers = {
     try {
       console.log('[AppKit] Requesting token from server...')
       
-      const response = await fetch(APPKIT_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${supabaseAccessToken}`,
-          'Content-Type': 'application/json',
-          'X-Client-Info': 'browser-extension'
-        }
-      })
+     const response = await fetch(APPKIT_API_URL, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${supabaseAccessToken}`,
+    'Content-Type': 'application/json',
+    'X-Client-Info': 'browser-extension'
+  },
+  body: JSON.stringify({}) // Add empty JSON body
+})
       
       if (!response.ok) {
         const errorText = await response.text()
