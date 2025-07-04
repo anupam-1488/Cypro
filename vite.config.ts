@@ -24,9 +24,24 @@ export default defineConfig({
         'service-worker': resolve(__dirname, 'src/platform/service-worker.ts'),
       },
       output: {
-        entryFileNames: '[name].js',
+        entryFileNames: (chunkInfo) => {
+          // Ensure service worker gets the correct name
+          if (chunkInfo.name === 'service-worker') {
+            return 'service-worker.js';
+          }
+          return '[name].js';
+        },
         chunkFileNames: '[name]-[hash].js',
-        assetFileNames: '[name].[ext]',
+        assetFileNames: (assetInfo) => {
+          // Ensure HTML files get the correct names
+          if (assetInfo.name === 'options.html') {
+            return 'options.html';
+          }
+          if (assetInfo.name === 'popup.html') {
+            return 'popup.html';
+          }
+          return '[name].[ext]';
+        },
         format: 'es', // ES modules
       },
     },
