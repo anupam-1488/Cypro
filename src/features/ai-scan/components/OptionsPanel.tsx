@@ -1,8 +1,7 @@
 // features/ai-scan/components/OptionsPanel.tsx
-import React, { useState, useCallback, useMemo, memo } from 'react';
+import React, { useState, useCallback, useMemo, memo, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@voilajsx/uikit/card';
 import { Button } from '@voilajsx/uikit/button';
-import { Input } from '@voilajsx/uikit/input';
 import { Label } from '@voilajsx/uikit/label';
 import { Badge } from '@voilajsx/uikit/badge';
 import { Alert, AlertDescription } from '@voilajsx/uikit/alert';
@@ -31,6 +30,13 @@ import {
   ChevronDown,
   ChevronRight,
   Settings,
+  MapPin,
+  Zap,
+  Database,
+  Link,
+  Users,
+  Filter,
+  User,
 } from 'lucide-react';
 import { useCustomer } from '../../shared/hooks/useCustomer';
 import { messaging } from '@voilajsx/comet/messaging';
@@ -50,15 +56,25 @@ const useFeedback = () => {
   return { feedback, showFeedback };
 };
 
-// Simple template card component
+// Enhanced template card component
 const TemplateCard = memo(({ template, onEdit, onDelete }) => (
   <div className="p-3 border rounded-lg hover:bg-muted/30 transition-colors">
     <div className="flex items-center justify-between">
       <div className="flex-1">
-        <h3 className="font-medium">{template.name}</h3>
-        <div className="text-sm text-muted-foreground">
-          {Object.values(template.fieldMapping).flat().length} fields mapped • {template.url}
+        <div className="flex items-center gap-2 mb-1">
+          <h3 className="font-medium">{template.name}</h3>
+          <Badge variant="outline" className="text-xs">
+            {Object.values(template.fieldMapping).flat().length} fields
+          </Badge>
         </div>
+        <div className="text-sm text-muted-foreground">
+          {template.url}
+        </div>
+        {template.extractedFields && (
+          <div className="text-xs text-blue-600 mt-1">
+            📊 {template.extractedFields.length} scanned fields
+          </div>
+        )}
       </div>
       <div className="flex gap-1">
         <Button variant="ghost" size="sm" onClick={() => onEdit(template)}>
@@ -72,49 +88,355 @@ const TemplateCard = memo(({ template, onEdit, onDelete }) => (
   </div>
 ));
 
-// Enhanced field mapping component that shows field details
-const SimpleFieldMapping = memo(({ 
+// IMPROVED: Customer selector for dynamic field mapping
+const CustomerSelector = memo(({ 
+  customers, 
+  selectedCustomer, 
+  onSelectCustomer,
+  availableFieldsCount 
+}) => {
+  const customersWithData = customers.filter(c => 
+    c.originalData && Object.keys(c.originalData).length > 0
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="p-4 bg-purple-50 border border-purple-200 rounded-lg">
+        <div className="text-sm font-medium text-purple-800 mb-3 flex items-center gap-2">
+          <Users className="w-4 h-4" />
+          Select Customer for Dynamic Field Mapping:
+        </div>
+        
+        <Select
+          value={selectedCustomer?.id || 'none'}
+          onValueChange={(customerId) => {
+            const customer = customerId === 'none' ? null : customers.find(c => c.id === customerId);
+            onSelectCustomer(customer);
+          }}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue>
+              {selectedCustomer ? (
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-blue-500" />
+                  <span className="font-medium">{selectedCustomer.name}</span>
+                  <Badge variant="outline" className="text-xs">
+                    {Object.keys(selectedCustomer.originalData || {}).length} fields
+                  </Badge>
+                </div>
+              ) : (
+                <span className="text-gray-500">Choose customer to see their available fields...</span>
+              )}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">
+              <span className="text-gray-500">No customer selected</span>
+            </SelectItem>
+            {customersWithData.map((customer) => (
+              <SelectItem key={customer.id} value={customer.id}>
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-blue-500" />
+                  <span className="font-medium">{customer.name}</span>
+                  <Badge variant="outline" className="text-xs">
+                    {Object.keys(customer.originalData || {}).length} fields
+                  </Badge>
+                  <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">
+                    {customer.dataSource}
+                  </Badge>
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {customersWithData.length === 0 && (
+          <div className="text-sm text-purple-700 mt-2">
+            No customers with data found. Download customers first using the AutoFill tab.
+          </div>
+        )}
+
+        {selectedCustomer && (
+          <div className="mt-3 p-3 bg-white rounded border">
+            <div className="text-sm font-medium text-gray-800 mb-2">
+              Available Fields for {selectedCustomer.name}:
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-1">
+              {Object.keys(selectedCustomer.originalData || {}).filter(field => field && field.trim() !== '').slice(0, 12).map(field => (
+                <Badge key={field} variant="outline" className="text-xs justify-start">
+                  {field}
+                </Badge>
+              ))}
+              {Object.keys(selectedCustomer.originalData || {}).filter(field => field && field.trim() !== '').length > 12 && (
+                <Badge variant="outline" className="text-xs">
+                  +{Object.keys(selectedCustomer.originalData || {}).filter(field => field && field.trim() !== '').length - 12} more
+                </Badge>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+// FIXED: Perfect field mapping component with immediate state updates
+const PerfectFieldMappingCard = memo(({ 
   field, 
   selectedJsonField, 
   jsonFields, 
-  onFieldMapping 
-}) => (
-  <div className="p-3 border rounded-lg space-y-2">
-    <div className="space-y-1">
-      <div className="font-medium text-sm">
-        {field.label || field.placeholder || field.name || 'Form Field'}
+  onFieldMapping,
+  mappingIndex,
+  selectedCustomer
+}) => {
+  // Local state for immediate UI feedback
+  const [localSelection, setLocalSelection] = useState(selectedJsonField || 'none');
+
+  // Update local state when props change
+  useEffect(() => {
+    setLocalSelection(selectedJsonField || 'none');
+  }, [selectedJsonField]);
+
+  const getFieldTypeIcon = (type) => {
+    switch (type?.toLowerCase()) {
+      case 'email': return '📧';
+      case 'tel': case 'phone': return '📞';
+      case 'url': return '🔗';
+      case 'password': return '🔒';
+      case 'select': return '📋';
+      case 'textarea': return '📝';
+      case 'number': return '🔢';
+      default: return '✏️';
+    }
+  };
+
+  const getFieldTypeColor = (type) => {
+    switch (type?.toLowerCase()) {
+      case 'email': return 'bg-blue-50 border-blue-200 text-blue-800';
+      case 'tel': case 'phone': return 'bg-green-50 border-green-200 text-green-800';
+      case 'select': return 'bg-purple-50 border-purple-200 text-purple-800';
+      case 'textarea': return 'bg-orange-50 border-orange-200 text-orange-800';
+      case 'number': return 'bg-yellow-50 border-yellow-200 text-yellow-800';
+      default: return 'bg-gray-50 border-gray-200 text-gray-800';
+    }
+  };
+
+  // IMPROVED: Smart field suggestions based on field name/label
+  const getSmartSuggestions = () => {
+    if (!selectedCustomer?.originalData) return [];
+    
+    const fieldName = (field.name || '').toLowerCase();
+    const fieldLabel = (field.label || '').toLowerCase();
+    const fieldPlaceholder = (field.placeholder || '').toLowerCase();
+    
+    const allFieldText = `${fieldName} ${fieldLabel} ${fieldPlaceholder}`;
+    
+    const suggestions = [];
+    
+    // Smart matching rules
+    const rules = [
+      { patterns: ['name', 'customer', 'full'], fields: ['customer_name', 'name', 'full_name'] },
+      { patterns: ['phone', 'mobile', 'contact', 'tel'], fields: ['phone', 'mobile', 'contact', 'phone_number'] },
+      { patterns: ['email', 'mail'], fields: ['email', 'email_address', 'mail'] },
+      { patterns: ['address', 'location'], fields: ['address', 'street_address', 'full_address'] },
+      { patterns: ['company', 'organization', 'employer'], fields: ['company_name', 'company', 'organization'] },
+      { patterns: ['city', 'town'], fields: ['city', 'town', 'locality'] },
+      { patterns: ['state', 'province'], fields: ['state', 'province', 'region'] },
+      { patterns: ['zip', 'postal', 'pin'], fields: ['pincode', 'zipcode', 'postal_code'] },
+      { patterns: ['job', 'occupation', 'profession'], fields: ['occupation', 'job_title', 'profession'] },
+      { patterns: ['budget', 'price'], fields: ['budget_range', 'price_range', 'budget'] },
+      { patterns: ['vehicle', 'car', 'model'], fields: ['vehicle_model', 'car_model', 'model'] },
+    ];
+
+    // Find matching customer fields
+    rules.forEach(rule => {
+      const hasPattern = rule.patterns.some(pattern => allFieldText.includes(pattern));
+      if (hasPattern) {
+        rule.fields.forEach(customerField => {
+          if (selectedCustomer.originalData[customerField] && customerField && customerField.trim() !== '') {
+            suggestions.push(customerField.trim());
+          }
+        });
+      }
+    });
+
+    // Remove duplicates and limit to top 3, filter out empty strings
+    return [...new Set(suggestions)].filter(s => s && s.trim() !== '').slice(0, 3);
+  };
+
+  const smartSuggestions = getSmartSuggestions();
+
+  const handleSelectionChange = (value) => {
+    console.log('[PerfectFieldMapping] Selection changing:', {
+      field: field.name,
+      selector: field.selector,
+      oldValue: localSelection,
+      newValue: value,
+      mappingIndex
+    });
+    
+    setLocalSelection(value);
+    
+    // Call onFieldMapping immediately
+    const jsonFieldToPass = value === 'none' ? null : value;
+    console.log('[PerfectFieldMapping] Calling onFieldMapping with:', {
+      selector: field.selector,
+      jsonField: jsonFieldToPass,
+      originalValue: value
+    });
+    
+    onFieldMapping(field.selector, jsonFieldToPass);
+  };
+
+  return (
+    <div className="p-4 border-2 rounded-lg space-y-3 hover:bg-gray-50 transition-colors">
+      {/* Field Info Header */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-3">
+          <span className="text-xl">{getFieldTypeIcon(field.type)}</span>
+          <div className="flex-1">
+            <div className="font-medium text-sm">
+              {field.label || field.placeholder || field.name || 'Form Field'}
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              {field.name && `Name: "${field.name}"`}
+              {field.placeholder && ` • Placeholder: "${field.placeholder}"`}
+            </div>
+          </div>
+          <Badge 
+            variant="outline" 
+            className={`text-xs ${getFieldTypeColor(field.type)}`}
+          >
+            {field.type || 'text'}
+          </Badge>
+        </div>
+
+        {/* Technical Details */}
+        <div className="text-xs text-muted-foreground bg-gray-50 p-2 rounded">
+          <div>🎯 Selector: <code className="bg-white px-1 rounded">{field.selector}</code></div>
+          {field.context && field.context !== 'main' && (
+            <div className="mt-1">📍 Context: <span className="text-blue-600">{field.context}</span></div>
+          )}
+          {field.value && (
+            <div className="mt-1">💬 Current Value: <span className="text-green-600">"{field.value}"</span></div>
+          )}
+        </div>
       </div>
-      <div className="text-xs text-gray-500">
-        Type: {field.type || 'text'} • Name: {field.name || 'N/A'}
-        {field.placeholder && ` • Placeholder: "${field.placeholder}"`}
+
+      {/* Smart Suggestions */}
+      {smartSuggestions.length > 0 && (
+        <div className="p-3 bg-blue-50 border border-blue-200 rounded">
+          <div className="text-sm font-medium text-blue-800 mb-2 flex items-center gap-2">
+            <Zap className="w-4 h-4" />
+            Smart Suggestions:
+          </div>
+          <div className="flex gap-1 flex-wrap">
+            {smartSuggestions.map(suggestion => (
+              <button
+                key={suggestion}
+                onClick={() => handleSelectionChange(suggestion)}
+                className="text-xs px-2 py-1 bg-blue-100 text-blue-800 rounded hover:bg-blue-200 transition-colors"
+              >
+                {suggestion}
+                {selectedCustomer?.originalData[suggestion] && (
+                  <span className="ml-1 text-blue-600">
+                    ({String(selectedCustomer.originalData[suggestion]).slice(0, 10)}{String(selectedCustomer.originalData[suggestion]).length > 10 ? '...' : ''})
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Perfect Mapping Dropdown */}
+      <div className="space-y-2">
+        <Label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+          <Link className="w-4 h-4" />
+          Map to Customer Data Field:
+        </Label>
+        <Select
+          value={localSelection}
+          onValueChange={handleSelectionChange}
+        >
+          <SelectTrigger className="w-full h-10">
+            <SelectValue>
+              {localSelection && localSelection !== 'none' ? (
+                <div className="flex items-center gap-2">
+                  <Database className="w-4 h-4 text-blue-500" />
+                  <span className="font-medium">{localSelection}</span>
+                  {selectedCustomer?.originalData?.[localSelection] && (
+                    <span className="text-sm text-gray-500">
+                      ({String(selectedCustomer.originalData[localSelection]).slice(0, 15)}{String(selectedCustomer.originalData[localSelection]).length > 15 ? '...' : ''})
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <span className="text-gray-500">Choose data field to map to...</span>
+              )}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500">❌ Don't fill this field</span>
+              </div>
+            </SelectItem>
+            {jsonFields.filter(field => field && field.trim() !== '').map((jsonField) => (
+              <SelectItem key={jsonField} value={jsonField}>
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-2">
+                    <Database className="w-4 h-4 text-blue-500" />
+                    <span className="font-medium">{jsonField}</span>
+                  </div>
+                  {selectedCustomer?.originalData?.[jsonField] && (
+                    <span className="text-xs text-gray-500 ml-2">
+                      ({String(selectedCustomer.originalData[jsonField]).slice(0, 20)}{String(selectedCustomer.originalData[jsonField]).length > 20 ? '...' : ''})
+                    </span>
+                  )}
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        
+        {/* Mapping Status Indicator */}
+        {localSelection && localSelection !== 'none' ? (
+          <div className="text-sm text-green-600 bg-green-50 p-3 rounded border border-green-200">
+            <div className="flex items-center gap-2 mb-2">
+              <CheckCircle className="w-4 h-4" />
+              <span className="font-medium">Mapping Active</span>
+            </div>
+            <div className="text-xs">
+              Customer data field <code className="bg-white px-1 rounded font-mono">{localSelection}</code> will 
+              fill form field <code className="bg-white px-1 rounded font-mono">{field.name || field.selector}</code>
+            </div>
+            {selectedCustomer?.originalData?.[localSelection] && (
+              <div className="text-xs mt-1 p-2 bg-white rounded border">
+                <strong>Preview value:</strong> "{String(selectedCustomer.originalData[localSelection])}"
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-sm text-gray-500 bg-gray-50 p-3 rounded border">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4" />
+              <span>This field will not be filled automatically</span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
-    <Select
-      value={selectedJsonField || 'none'}
-      onValueChange={(value) => onFieldMapping(field.selector, value === 'none' ? null : value)}
-    >
-      <SelectTrigger className="w-full">
-        <SelectValue placeholder="Choose data field" />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="none">Don't fill this field</SelectItem>
-        {jsonFields.map((jsonField) => (
-          <SelectItem key={jsonField} value={jsonField}>
-            {jsonField}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  </div>
-));
+  );
+});
 
 export default function OptionsPanel(): JSX.Element {
   const {
     templates,
+    customers,
     extractedFields,
     fieldMapping,
     showMappingInterface,
-    editingTemplate,
     pendingTemplate,
     loading,
     updateTemplate,
@@ -137,84 +459,226 @@ export default function OptionsPanel(): JSX.Element {
   const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showVisibleFieldsOnly, setShowVisibleFieldsOnly] = useState(true);
-  const [fieldTypeFilter, setFieldTypeFilter] = useState('all');
+  const [fieldTypeFilter, setFieldTypeFilter] = useState('text');
   const [isNavigating, setIsNavigating] = useState(false);
+
+  // IMPROVED: Customer selection for dynamic mapping
+  const [selectedCustomerForMapping, setSelectedCustomerForMapping] = useState(null);
+
+  // IMPROVED: Get dynamic fields based on selected customer
+  const dynamicJsonFields = useMemo(() => {
+    if (selectedCustomerForMapping?.originalData) {
+      return Object.keys(selectedCustomerForMapping.originalData)
+        .filter(key => {
+          const value = selectedCustomerForMapping.originalData[key];
+          return value !== null && value !== undefined && value !== '' && key && key.trim() !== '';
+        })
+        .map(key => key.trim())
+        .filter(key => key !== '')
+        .sort();
+    }
+    return getJsonFieldNamesFromCustomers();
+  }, [selectedCustomerForMapping, getJsonFieldNamesFromCustomers]);
 
   // Computed values
   const stats = useMemo(() => ({
     totalTemplates: templates.length,
-    jsonFields: getJsonFieldNamesFromCustomers(),
-  }), [templates, getJsonFieldNamesFromCustomers]);
+    totalCustomers: customers.length,
+    customersWithData: customers.filter(c => c.originalData && Object.keys(c.originalData).length > 0).length,
+    jsonFields: dynamicJsonFields,
+  }), [templates, customers, dynamicJsonFields]);
 
-  // Enhanced field filtering with text-only option
+  // Enhanced field filtering for customer data
   const visibleFields = useMemo(() => {
+    console.log('[OptionsPanel] Filtering fields:', {
+      totalFields: extractedFields?.length || 0,
+      showVisibleOnly: showVisibleFieldsOnly,
+      fieldTypeFilter
+    });
+
     if (!extractedFields) return [];
     
     let filtered = extractedFields;
     
     // Filter by visibility
     if (showVisibleFieldsOnly) {
-      filtered = filtered.filter(field => !field.isHidden);
+      filtered = filtered.filter(field => field.isVisible !== false && !field.isHidden);
     }
     
-    // Filter by field type
+    // Enhanced filtering for customer data fields
     if (fieldTypeFilter === 'text') {
       filtered = filtered.filter(field => {
-        const fieldType = field.type?.toLowerCase() || '';
-        const tagName = field.tagName?.toLowerCase() || '';
-        const fieldName = field.name?.toLowerCase() || '';
-        const fieldPlaceholder = field.placeholder?.toLowerCase() || '';
-        const fieldLabel = field.label?.toLowerCase() || '';
+        const fieldType = field.type?.toLowerCase() || 'text';
+        const tagName = field.tagName?.toLowerCase() || 'input';
+        const fieldName = (field.name || '').toLowerCase();
+        const fieldPlaceholder = (field.placeholder || '').toLowerCase();
+        const fieldLabel = (field.label || '').toLowerCase();
         
-        // Explicitly exclude non-text field types
-        const excludedTypes = [
-          'radio', 'checkbox', 'submit', 'button', 'reset', 
-          'file', 'image', 'hidden', 'range', 'color',
-          'date', 'datetime', 'datetime-local', 'month', 
-          'time', 'week', 'number'
-        ];
-        
-        const excludedTags = ['select', 'button'];
-        
-        // If it's an excluded type or tag, filter it out
-        if (excludedTypes.includes(fieldType) || excludedTags.includes(tagName)) {
+        // Exclude non-data field types
+        const excludedTypes = ['submit', 'button', 'reset', 'image', 'file', 'hidden'];
+        if (excludedTypes.includes(fieldType)) {
           return false;
         }
         
-        // Include only text-based inputs
-        const allowedTypes = [
-          'text', 'email', 'tel', 'phone', 'url', 'search', 'password'
+        // Include all text-based inputs, selects, and textareas
+        const includedTypes = [
+          'text', 'email', 'tel', 'phone', 'url', 'search', 'password', 'number'
         ];
         
         const isTextarea = tagName === 'textarea';
-        const isAllowedInput = allowedTypes.includes(fieldType);
-        const isInputWithoutType = tagName === 'input' && !fieldType;
+        const isSelect = tagName === 'select';
+        const isGoodInput = includedTypes.includes(fieldType) || fieldType === '';
         
-        // Check for customer data field indicators
-        const customerDataIndicators = [
-          'name', 'email', 'phone', 'address', 'city', 'state', 
-          'zip', 'postal', 'company', 'organization', 'title', 
-          'first', 'last', 'middle', 'street', 'apt', 'suite',
-          'website', 'url', 'comment', 'message', 'note', 'description'
+        // Enhanced customer data indicators
+        const customerDataKeywords = [
+          'name', 'customer', 'client', 'contact', 'person', 'user',
+          'email', 'mail', 'phone', 'mobile', 'tel', 'contact',
+          'address', 'city', 'state', 'zip', 'postal', 'pincode',
+          'company', 'organization', 'employer', 'business',
+          'vehicle', 'model', 'car', 'auto', 'brand',
+          'budget', 'price', 'cost', 'amount',
+          'comment', 'message', 'note', 'remark',
+          'occupation', 'job', 'profession',
+          'timeline', 'delivery', 'purchase'
         ];
         
-        const hasCustomerDataIndicators = customerDataIndicators.some(indicator => 
-          fieldName.includes(indicator) || 
-          fieldPlaceholder.includes(indicator) || 
-          fieldLabel.includes(indicator)
+        const hasCustomerKeywords = customerDataKeywords.some(keyword => 
+          fieldName.includes(keyword) || 
+          fieldPlaceholder.includes(keyword) || 
+          fieldLabel.includes(keyword)
         );
         
-        return isTextarea || isAllowedInput || isInputWithoutType || hasCustomerDataIndicators;
+        return isTextarea || isSelect || isGoodInput || hasCustomerKeywords;
       });
     }
     
+    console.log('[OptionsPanel] Filtered to', filtered.length, 'fields');
     return filtered;
   }, [extractedFields, showVisibleFieldsOnly, fieldTypeFilter]);
 
+  // FIXED: Perfect field mapping state management with proper state update
+  const handleFieldMapping = useCallback((selector, jsonField) => {
+    console.log('[OptionsPanel] Mapping field:', { selector, jsonField });
+    
+    setFieldMapping(prevMapping => {
+      const newMapping = { ...prevMapping };
+      
+      // Remove any existing mapping for this selector
+      Object.keys(newMapping).forEach(key => {
+        if (newMapping[key]?.selector === selector) {
+          delete newMapping[key];
+        }
+      });
+      
+      // Add new mapping if jsonField is valid
+      if (jsonField && jsonField !== 'none') {
+        const newKey = `mapping_${selector}_${Date.now()}`;
+        newMapping[newKey] = {
+          customerField: jsonField,
+          selector: selector
+        };
+        console.log('[OptionsPanel] Added mapping:', newMapping[newKey]);
+      }
+      
+      console.log('[OptionsPanel] Updated fieldMapping:', newMapping);
+      return newMapping;
+    });
+  }, [setFieldMapping]);
+
+  // FIXED: Count mapped fields correctly
+  const mappedFieldsCount = useMemo(() => {
+    const validMappings = Object.values(fieldMapping || {}).filter(m => 
+      m?.customerField && m?.customerField !== 'none' && m?.selector
+    );
+    console.log('[OptionsPanel] Counting mappings:', { fieldMapping, validMappings, count: validMappings.length });
+    return validMappings.length;
+  }, [fieldMapping]);
+
+  // FIXED: Save mapping with proper validation
+  const handleSaveMapping = useCallback(async () => {
+    console.log('[OptionsPanel] Starting save process:', { 
+      pendingTemplate, 
+      fieldMapping, 
+      mappedFieldsCount,
+      editingTemplateId 
+    });
+
+    if (!pendingTemplate) {
+      showFeedback('error', 'No template data found');
+      return;
+    }
+
+    const validMappings = Object.values(fieldMapping || {}).filter(m => 
+      m?.customerField && m?.customerField !== 'none' && m?.selector
+    );
+
+    console.log('[OptionsPanel] Valid mappings for save:', validMappings);
+
+    if (validMappings.length === 0) {
+      showFeedback('error', 'Please map at least one field to create the template');
+      return;
+    }
+
+    try {
+      let result;
+      
+      if (editingTemplateId) {
+        console.log('[OptionsPanel] Updating existing template:', editingTemplateId);
+        result = await updateMappingFromFields(editingTemplateId, fieldMapping);
+      } else {
+        console.log('[OptionsPanel] Creating new template');
+        result = await createMappingFromFields(fieldMapping);
+      }
+      
+      console.log('[OptionsPanel] Save result:', result);
+      
+      if (result?.success) {
+        showFeedback('success', `Template ${editingTemplateId ? 'updated' : 'created'} successfully with ${validMappings.length} field mappings!`);
+        
+        // Clear all state
+        setShowMappingInterface(false);
+        setFieldMapping({});
+        setExtractedFields([]);
+        setPendingTemplate(null);
+        setEditingTemplateId(null);
+        setSelectedCustomerForMapping(null);
+      } else {
+        showFeedback('error', result?.error || 'Failed to save template');
+      }
+    } catch (error) {
+      console.error('[OptionsPanel] Save error:', error);
+      showFeedback('error', `Save failed: ${error.message}`);
+    }
+  }, [
+    pendingTemplate, 
+    fieldMapping, 
+    editingTemplateId, 
+    updateMappingFromFields, 
+    createMappingFromFields, 
+    showFeedback,
+    setShowMappingInterface,
+    setFieldMapping,
+    setExtractedFields,
+    setPendingTemplate,
+    setEditingTemplateId,
+    setSelectedCustomerForMapping,
+    mappedFieldsCount
+  ]);
+
+  // FIXED: Perfect mapping retrieval
+  const getMappedJsonField = useCallback((selector) => {
+    const mapping = Object.values(fieldMapping || {}).find(m => m?.selector === selector);
+    const result = mapping ? mapping.customerField : null;
+    console.log('[OptionsPanel] getMappedJsonField:', { selector, result, mapping });
+    return result;
+  }, [fieldMapping]);
+
   // Event handlers
   const handleEditTemplate = useCallback((template) => {
+    console.log('[OptionsPanel] Editing template:', template);
+    
     if (!template.extractedFields || template.extractedFields.length === 0) {
-      showFeedback('error', 'Cannot edit this template');
+      showFeedback('error', 'Cannot edit this template - no extracted fields found');
       return;
     }
 
@@ -222,19 +686,21 @@ export default function OptionsPanel(): JSX.Element {
     setExtractedFields(template.extractedFields);
     
     // Convert existing mapping to new format
-    const convertedMapping = {};
-    Object.entries(template.fieldMapping).forEach(([jsonField, selectors]) => {
+    const newMapping = {};
+    Object.entries(template.fieldMapping || {}).forEach(([jsonField, selectors]) => {
       const selectorArray = Array.isArray(selectors) ? selectors : [selectors];
       selectorArray.forEach((selector, index) => {
-        const key = `${jsonField}_${Date.now()}_${index}`;
-        convertedMapping[key] = {
+        const key = `edit_${jsonField}_${index}_${Date.now()}`;
+        newMapping[key] = {
           customerField: jsonField,
-          selector
+          selector: selector
         };
       });
     });
     
-    setFieldMapping(convertedMapping);
+    console.log('[OptionsPanel] Converted mapping for editing:', newMapping);
+    setFieldMapping(newMapping);
+    
     setPendingTemplate({
       name: template.name,
       url: template.url,
@@ -242,157 +708,56 @@ export default function OptionsPanel(): JSX.Element {
     });
     
     setShowMappingInterface(true);
-    setFieldTypeFilter('all');
-    showFeedback('success', `Editing ${template.name}`);
+    setFieldTypeFilter('text');
+    showFeedback('success', `Editing template: ${template.name}`);
   }, [setExtractedFields, setFieldMapping, setPendingTemplate, setShowMappingInterface, showFeedback]);
 
   const handleDeleteTemplate = useCallback(async (templateId) => {
-    if (!confirm('Delete this template?')) return;
+    if (!confirm('Are you sure you want to delete this template?')) return;
 
     try {
       await deleteTemplate(templateId);
-      showFeedback('success', 'Template deleted');
+      showFeedback('success', 'Template deleted successfully');
     } catch (error) {
       showFeedback('error', 'Failed to delete template');
     }
   }, [deleteTemplate, showFeedback]);
 
-  const handleFieldMapping = useCallback((selector, jsonField) => {
-    if (jsonField) {
-      setFieldMapping(prev => {
-        // Remove existing mapping for this selector
-        const updated = { ...prev };
-        Object.keys(updated).forEach(key => {
-          if (updated[key].selector === selector) {
-            delete updated[key];
-          }
-        });
-        
-        // Add new mapping
-        const newKey = `${jsonField}_${Date.now()}`;
-        updated[newKey] = {
-          customerField: jsonField,
-          selector
-        };
-        
-        return updated;
-      });
-    } else {
-      // Remove mapping
-      setFieldMapping(prev => {
-        const updated = { ...prev };
-        Object.keys(updated).forEach(key => {
-          if (updated[key].selector === selector) {
-            delete updated[key];
-          }
-        });
-        return updated;
-      });
-    }
-  }, [setFieldMapping]);
-
-  const getMappedJsonField = useCallback((selector) => {
-    const mapping = Object.values(fieldMapping).find(m => m.selector === selector);
-    return mapping ? mapping.customerField : null;
-  }, [fieldMapping]);
-
-  const handleSaveMapping = useCallback(async () => {
-    if (!pendingTemplate) {
-      showFeedback('error', 'No template data');
-      return;
-    }
-
-    if (Object.keys(fieldMapping).length === 0) {
-      showFeedback('error', 'Map at least one field');
-      return;
-    }
-
-    try {
-      let result;
-      if (editingTemplateId) {
-        result = await updateMappingFromFields(editingTemplateId, fieldMapping);
-      } else {
-        result = await createMappingFromFields(fieldMapping);
-      }
-      
-      if (result.success) {
-        showFeedback('success', `Template ${editingTemplateId ? 'updated' : 'created'}`);
-        setEditingTemplateId(null);
-        setShowMappingInterface(false);
-        setFieldTypeFilter('all');
-      } else {
-        showFeedback('error', result.error);
-      }
-    } catch (error) {
-      showFeedback('error', 'Failed to save template');
-    }
-  }, [pendingTemplate, fieldMapping, editingTemplateId, updateMappingFromFields, createMappingFromFields, showFeedback]);
-
   const handleCheckForExtractedFields = useCallback(async () => {
     try {
       const foundFields = await checkForExtractedFields();
       if (foundFields) {
-        showFeedback('success', 'Found form to map!');
+        showFeedback('success', 'Found scanned form! Ready for field mapping.');
       } else {
-        showFeedback('info', 'No forms found. Use AI Scan first.');
+        showFeedback('info', 'No scanned forms found. Use AI Scan tab first.');
       }
     } catch (error) {
       showFeedback('error', 'Check failed');
     }
   }, [checkForExtractedFields, showFeedback]);
 
-  const handleAIScan = useCallback(async () => {
-    const templateName = prompt('Template name:');
-    if (!templateName?.trim()) {
-      showFeedback('error', 'Template name required');
-      return;
-    }
-
-    try {
-      // Use AI Scan feature's extractFormFields handler
-      const extractResult = await messaging.sendToContent({
-        type: 'extractFormFields',
-        data: {}
+  // Debug info
+  useEffect(() => {
+    if (showMappingInterface) {
+      console.log('[OptionsPanel] Mapping interface state:', {
+        extractedFields: extractedFields?.length || 0,
+        visibleFields: visibleFields.length,
+        jsonFields: stats.jsonFields.length,
+        currentMapping: fieldMapping,
+        mappedCount: mappedFieldsCount,
+        selectedCustomer: selectedCustomerForMapping?.name,
+        hasValidMappings: mappedFieldsCount > 0
       });
-
-      if (!extractResult.success) {
-        showFeedback('error', 'Failed to scan form');
-        return;
-      }
-
-      const currentTab = await messaging.getActiveTab();
-      const currentUrl = currentTab?.url;
-      const domain = currentUrl ? new URL(currentUrl).hostname : '';
-
-      const saveResult = await saveExtractedFields({
-        templateName: templateName.trim(),
-        fields: extractResult.fields,
-        url: currentUrl,
-        domain: domain,
-      });
-
-      if (saveResult.success) {
-        showFeedback('success', `Scanned ${extractResult.fields.length} fields`);
-        setIsNavigating(true);
-        try {
-          await messaging.openOptionsPage();
-          setTimeout(() => setIsNavigating(false), 1500);
-        } catch (error) {
-          setIsNavigating(false);
-        }
-      }
-    } catch (error) {
-      showFeedback('error', 'Scan failed');
     }
-  }, [saveExtractedFields, showFeedback]);
+  }, [showMappingInterface, extractedFields, visibleFields, stats.jsonFields, fieldMapping, mappedFieldsCount, selectedCustomerForMapping]);
 
   return (
     <div className="max-w-4xl mx-auto space-y-4 p-4">
       {/* Header */}
       <div className="space-y-1">
-        <h1 className="text-xl font-bold">Template Management</h1>
+        <h1 className="text-xl font-bold">Perfect Template Management</h1>
         <p className="text-sm text-muted-foreground">
-          Scan web forms and create field mapping templates
+          Scan web forms and create perfect field mapping templates for your customer data
         </p>
       </div>
 
@@ -408,28 +773,59 @@ export default function OptionsPanel(): JSX.Element {
         </Alert>
       )}
 
-      {/* Template Mapping Interface */}
+      {/* Perfect Template Mapping Interface */}
       {showMappingInterface && pendingTemplate && (
-        <Card className="border-primary">
-          <CardHeader>
-            <CardTitle className="text-lg">
-              {editingTemplateId ? 'Edit' : 'Create'} Template: {pendingTemplate.name}
+        <Card className="border-2 border-primary shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-blue-50 to-purple-50">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <MapPin className="w-5 h-5 text-blue-600" />
+              {editingTemplateId ? 'Edit Template' : 'Create Template'}: {pendingTemplate.name}
             </CardTitle>
             <div className="text-sm text-muted-foreground">
-              Connect form fields to your customer data
+              Create perfect mappings between form fields and your customer data fields
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {stats.jsonFields.length === 0 ? (
-              <Alert>
+            {stats.customersWithData === 0 ? (
+              <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
-                  Upload JSON customer data first to enable field mapping
+                  <strong>Customer data required!</strong> Download customers with data first. 
+                  Go to AutoFill → Search and download customers with rich data.
                 </AlertDescription>
               </Alert>
             ) : (
               <>
-                {/* Enhanced filter controls */}
+                {/* IMPROVED: Dynamic Customer Selection */}
+                <CustomerSelector 
+                  customers={customers}
+                  selectedCustomer={selectedCustomerForMapping}
+                  onSelectCustomer={setSelectedCustomerForMapping}
+                  availableFieldsCount={stats.jsonFields.length}
+                />
+
+                {/* Perfect Progress indicator */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-blue-600" />
+                      <span className="text-sm font-medium text-blue-800">
+                        {stats.jsonFields.length} Customer Data Fields Available
+                        {selectedCustomerForMapping && ` (from ${selectedCustomerForMapping.name})`}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-green-600" />
+                      <span className="text-sm font-medium text-green-800">
+                        {mappedFieldsCount} Field{mappedFieldsCount !== 1 ? 's' : ''} Mapped
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Perfect filter controls */}
                 <div className="space-y-3">
                   <div className="flex items-center gap-2 text-sm">
                     <span>Show hidden fields:</span>
@@ -442,10 +838,23 @@ export default function OptionsPanel(): JSX.Element {
                     </span>
                   </div>
                   
-                  {/* Field Type Filter */}
                   <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                    <Label className="font-medium text-blue-800 mb-3 block">Field Type Filter</Label>
+                    <Label className="font-medium text-blue-800 mb-3 block flex items-center gap-2">
+                      <Filter className="w-4 h-4" />
+                      Field Filter
+                    </Label>
                     <div className="flex gap-4">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="fieldType"
+                          value="text"
+                          checked={fieldTypeFilter === 'text'}
+                          onChange={(e) => setFieldTypeFilter(e.target.value)}
+                          className="text-blue-600"
+                        />
+                        <span className="text-sm text-gray-700">✨ Customer Data Fields Only</span>
+                      </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
@@ -457,64 +866,75 @@ export default function OptionsPanel(): JSX.Element {
                         />
                         <span className="text-sm text-gray-700">All Fields ({extractedFields?.length || 0})</span>
                       </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="fieldType"
-                          value="text"
-                          checked={fieldTypeFilter === 'text'}
-                          onChange={(e) => setFieldTypeFilter(e.target.value)}
-                          className="text-blue-600"
-                        />
-                        <span className="text-sm text-gray-700">Customer Data Fields Only</span>
-                      </label>
                     </div>
                     <p className="text-xs text-blue-600 mt-2">
-                      💡 Tip: Choose "Customer Data Fields Only" to see name, email, phone, and address fields
+                      💡 Customer Data Fields mode shows fields most likely to contain customer information
                     </p>
                   </div>
                 </div>
 
-                {/* Field list with count feedback */}
-                <div className="space-y-3">
+                {/* Perfect field list */}
+                <div className="space-y-4">
                   {visibleFields.length > 0 ? (
-                    <div className="text-center p-2 bg-green-50 border border-green-200 rounded-lg">
-                      <span className="text-sm font-medium text-green-800">
-                        Showing {visibleFields.length} fields to map
-                        {fieldTypeFilter === 'text' && ' (customer data fields only)'}
-                      </span>
-                    </div>
+                    <>
+                      <div className="text-center p-3 bg-green-50 border border-green-200 rounded-lg">
+                        <span className="text-sm font-medium text-green-800">
+                          🎯 {visibleFields.length} form field{visibleFields.length !== 1 ? 's' : ''} ready for mapping
+                          {fieldTypeFilter === 'text' && ' (customer data fields)'}
+                          {selectedCustomerForMapping && ` with ${selectedCustomerForMapping.name}'s data`}
+                        </span>
+                      </div>
+                    </>
                   ) : (
                     <div className="text-center p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                      <AlertCircle className="w-8 h-8 mx-auto mb-2 text-yellow-600" />
                       <span className="text-sm font-medium text-yellow-800">
-                        No fields match your current filters. Try selecting "All Fields" above.
+                        No fields match your current filters. Try "All Fields" above.
                       </span>
                     </div>
                   )}
                   
-                  {visibleFields.map((field) => (
-                    <SimpleFieldMapping
-                      key={field.selector}
-                      field={field}
-                      selectedJsonField={getMappedJsonField(field.selector)}
-                      jsonFields={stats.jsonFields}
-                      onFieldMapping={handleFieldMapping}
-                    />
-                  ))}
+                  {/* Perfect field mapping cards */}
+                  <div className="space-y-4 max-h-96 overflow-y-auto">
+                    {visibleFields.map((field, index) => (
+                      <PerfectFieldMappingCard
+                        key={`field_${field.selector}_${index}`}
+                        field={field}
+                        selectedJsonField={getMappedJsonField(field.selector)}
+                        jsonFields={stats.jsonFields}
+                        onFieldMapping={handleFieldMapping}
+                        mappingIndex={index}
+                        selectedCustomer={selectedCustomerForMapping}
+                      />
+                    ))}
+                  </div>
                 </div>
 
-                <div className="flex gap-2 pt-2">
-                  <Button onClick={handleSaveMapping} className="flex-1">
-                    <Save className="w-4 h-4 mr-2" />
+                {/* Perfect Save/Cancel buttons */}
+                <div className="flex gap-2 pt-4 border-t-2">
+                  <Button 
+                    onClick={handleSaveMapping} 
+                    className="flex-1 h-12"
+                    // disabled={loading || mappedFieldsCount === 0}
+                    size="lg"
+                  >
+                    <Save className="w-5 h-5 mr-2" />
                     {editingTemplateId ? 'Update' : 'Create'} Template
+                    {mappedFieldsCount > 0 && ` (${mappedFieldsCount} mapping${mappedFieldsCount !== 1 ? 's' : ''})`}
                   </Button>
+                  
                   <Button 
                     variant="outline" 
                     onClick={() => {
                       setShowMappingInterface(false);
                       setEditingTemplateId(null);
-                      setFieldTypeFilter('all');
+                      setFieldTypeFilter('text');
+                      setFieldMapping({});
+                      setExtractedFields([]);
+                      setPendingTemplate(null);
+                      setSelectedCustomerForMapping(null);
                     }}
+                    size="lg"
                   >
                     Cancel
                   </Button>
@@ -551,28 +971,13 @@ export default function OptionsPanel(): JSX.Element {
               <Globe className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
               <div className="text-sm text-muted-foreground mb-2">No templates yet</div>
               <div className="text-xs text-muted-foreground">
-                Use AI Scan to create templates
+                Use AI Scan to create templates from web forms
               </div>
             </div>
           )}
 
           {!showMappingInterface && (
             <div className="pt-3 border-t border-border mt-3 space-y-2">
-              {/* <Button 
-                onClick={handleAIScan}
-                disabled={loading.scan || isNavigating}
-                variant="default"
-                size="sm"
-                className="w-full"
-              >
-                {loading.scan || isNavigating ? (
-                  <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                ) : (
-                  <Scan className="w-4 h-4 mr-1" />
-                )}
-                AI Scan Current Form
-              </Button> */}
-              
               <Button 
                 onClick={handleCheckForExtractedFields}
                 variant="outline" 
@@ -587,13 +992,13 @@ export default function OptionsPanel(): JSX.Element {
         </CardContent>
       </Card>
 
-      {/* Advanced Settings */}
-      {/* <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
+      {/* Statistics */}
+      <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
         <CollapsibleTrigger asChild>
           <Button variant="ghost" className="w-full justify-between text-sm">
             <span className="flex items-center gap-2">
               <Settings className="w-4 h-4" />
-              Advanced Settings
+              Statistics & Available Data Fields
             </span>
             {showAdvanced ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
           </Button>
@@ -602,17 +1007,24 @@ export default function OptionsPanel(): JSX.Element {
           <Card>
             <CardContent className="pt-4">
               <div className="text-sm text-muted-foreground space-y-2">
-                <div>• Total templates: {stats.totalTemplates}</div>
-                <div>• Available data fields: {stats.jsonFields.length}</div>
+                <div>• Templates created: {stats.totalTemplates}</div>
+                <div>• Total customers: {stats.totalCustomers}</div>
+                <div>• Customers with data: {stats.customersWithData}</div>
+                <div>• Customer data fields available: {stats.jsonFields.length}</div>
                 {stats.jsonFields.length > 0 && (
                   <div className="pt-2">
-                    <div className="text-xs font-medium mb-1">JSON Fields:</div>
+                    <div className="text-xs font-medium mb-1">Available Customer Data Fields:</div>
                     <div className="flex flex-wrap gap-1">
-                      {stats.jsonFields.map(field => (
+                      {stats.jsonFields.filter(field => field && field.trim() !== '').slice(0, 12).map(field => (
                         <Badge key={field} variant="outline" className="text-xs">
                           {field}
                         </Badge>
                       ))}
+                      {stats.jsonFields.filter(field => field && field.trim() !== '').length > 12 && (
+                        <Badge variant="outline" className="text-xs">
+                          +{stats.jsonFields.filter(field => field && field.trim() !== '').length - 12} more
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 )}
@@ -620,24 +1032,25 @@ export default function OptionsPanel(): JSX.Element {
             </CardContent>
           </Card>
         </CollapsibleContent>
-      </Collapsible> */}
+      </Collapsible>
 
       {/* Getting Started Guide */}
-      {/* {stats.totalTemplates === 0 && (
+      {stats.totalTemplates === 0 && (
         <Card className="border-blue-200 bg-blue-50">
           <CardContent className="pt-4">
             <div className="text-center space-y-2">
-              <h3 className="font-medium text-blue-900">Getting Started</h3>
+              <h3 className="font-medium text-blue-900">Getting Started Guide</h3>
               <div className="text-sm text-blue-700 space-y-1">
-                <div>1. Navigate to a web form you want to fill</div>
-                <div>2. Click "AI Scan Current Form" to extract fields</div>
-                <div>3. Map form fields to your customer data</div>
-                <div>4. Use the template with AutoFill feature</div>
+                <div>1. Go to AutoFill tab and search/download customers with data</div>
+                <div>2. Go to AI Scan tab and scan a web form</div>
+                <div>3. Return here for dynamic field mapping</div>
+                <div>4. Select a customer to see their available fields</div>
+                <div>5. Use templates in AutoFill tab</div>
               </div>
             </div>
           </CardContent>
         </Card>
-      )} */}
+      )}
     </div>
   );
 }

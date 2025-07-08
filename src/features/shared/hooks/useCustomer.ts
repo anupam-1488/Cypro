@@ -16,8 +16,13 @@ interface Customer {
   company?: string;
   notes?: string;
   createdAt: number;
-  dataSource: 'manual' | 'json';
+  dataSource: 'manual' | 'json' | 'api';
   originalData?: Record<string, any>;
+  scope?: 'own' | 'tenant' | 'org';
+  created_at?: string;
+  updated_at?: string;
+  synced?: boolean;
+  downloadedAt?: string;
 }
 
 interface FormField {
@@ -55,6 +60,7 @@ interface LoadingState {
   fill: boolean;
   upload: boolean;
   save: boolean;
+  add: boolean;
 }
 
 interface PendingTemplate {
@@ -70,6 +76,54 @@ interface OperationResult {
 }
 
 // ===============================
+// GLOBAL STATE MANAGEMENT
+// ===============================
+
+let globalCustomers: Customer[] = [];
+let globalTemplates: BusinessTemplate[] = [];
+let globalSelectedCustomer: Customer | null = null;
+let globalSelectedTemplate: BusinessTemplate | null = null;
+let globalEditingCustomer: Customer | null = null;
+let globalLoading: LoadingState = {
+  scan: false,
+  fill: false,
+  upload: false,
+  save: false,
+  add: false,
+};
+let globalExtractedFields: FormField[] = [];
+let globalFieldMapping: Record<string, any> = {};
+let globalShowMappingInterface: boolean = false;
+let globalPendingTemplate: PendingTemplate | null = null;
+
+const updateFunctions = new Set<() => void>();
+
+const triggerGlobalUpdate = () => {
+  console.log('[useCustomer] Triggering global update for', updateFunctions.size, 'hook instances');
+  updateFunctions.forEach(updateFn => updateFn());
+};
+
+const saveCustomersGlobally = async () => {
+  try {
+    await indexedDBStorage.set(STORAGE_KEYS.CUSTOMERS, globalCustomers);
+    console.log('[useCustomer] Saved customers globally:', globalCustomers.length);
+    triggerGlobalUpdate();
+  } catch (error) {
+    console.error('[useCustomer] Error saving customers:', error);
+  }
+};
+
+const saveTemplatesGlobally = async () => {
+  try {
+    await indexedDBStorage.set(STORAGE_KEYS.TEMPLATES, globalTemplates);
+    console.log('[useCustomer] Saved templates globally:', globalTemplates.length);
+    triggerGlobalUpdate();
+  } catch (error) {
+    console.error('[useCustomer] Error saving templates:', error);
+  }
+};
+
+// ===============================
 // CONSTANTS
 // ===============================
 
@@ -79,83 +133,126 @@ const STORAGE_KEYS = {
   PENDING_EXTRACTION: 'customer.pendingExtraction',
 } as const;
 
-const PHONE_VALIDATION = {
-  MIN_DIGITS: 7,
-  MAX_DIGITS: 15,
-  PATTERN: /^[\+]?[\d\s\-\(\)]{7,20}$/,
-} as const;
-
-const NAME_VALIDATION = {
-  MIN_LENGTH: 2,
-  MAX_LENGTH: 50,
-  MIN_WORDS: 1,
-  MAX_WORDS: 4,
-  PATTERN: /^[A-Za-z][A-Za-z\s\.]{1,50}$/,
-} as const;
-
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const ADDRESS_MIN_LENGTH = 15;
-const ADDRESS_PATTERN = /\d+.*road|street|avenue|lane/i;
-
-const COMPANY_INDICATORS = [
-  /company/i, /corp/i, /ltd/i, /inc/i, 
-  /technologies/i, /solutions/i
-] as const;
-
-const SUPPORTED_FILE_TYPES = {
-  JSON: ['json'],
-  MIME_TYPES: ['application/json', 'text/json', 'text/plain'],
+const FIELD_MAPPINGS = {
+  name: [
+    'customer_name', 'name', 'Customer Name', 'customer name', 'Name',
+    'full_name', 'fullname', 'client_name', 'buyer_name'
+  ],
+  phone: [
+    'phone', 'Phone', 'mobile', 'Mobile', 'contact', 'Contact',
+    'phone_number', 'mobile_number', 'contact_number', 'cell'
+  ],
+  email: [
+    'email', 'Email', 'email_address', 'Email Address', 'mail',
+    'e_mail', 'e-mail', 'contact_email'
+  ],
+  address: [
+    'address', 'Address', 'street_address', 'full_address',
+    'residential_address', 'home_address', 'location'
+  ],
+  company: [
+    'company_name', 'company', 'Company', 'organization',
+    'employer', 'workplace', 'business_name', 'firm'
+  ],
+  city: [
+    'city', 'City', 'town', 'Town', 'locality', 'place'
+  ],
+  state: [
+    'state', 'State', 'province', 'region'
+  ],
+  pincode: [
+    'pincode', 'pin_code', 'zipcode', 'zip_code', 'postal_code', 'zip'
+  ],
+  occupation: [
+    'occupation', 'job', 'profession', 'designation', 'role'
+  ],
+  budget: [
+    'budget_range', 'budget', 'price_range', 'budget_min', 'budget_max'
+  ],
+  vehicle: [
+    'vehicle_model', 'model', 'car_model', 'preferred_model', 'variant_interest'
+  ]
 } as const;
 
 /**
- * Shared Customer Hook for managing customer data, templates, and form operations
- * Can be used across different features (AutoFill, AI Scan, Debug)
+ * Initialize global state from storage
  */
+const initializeGlobalState = async () => {
+  try {
+    const [savedCustomers, savedTemplates] = await Promise.all([
+      indexedDBStorage.get(STORAGE_KEYS.CUSTOMERS, []),
+      indexedDBStorage.get(STORAGE_KEYS.TEMPLATES, []),
+    ]);
+    globalCustomers = savedCustomers;
+    globalTemplates = savedTemplates;
+    console.log('[useCustomer] Initialized global state - customers:', globalCustomers.length, 'templates:', globalTemplates.length);
+  } catch (error) {
+    console.error('[useCustomer] Error initializing global state:', error);
+  }
+};
+
+let isInitialized = false;
+if (!isInitialized) {
+  initializeGlobalState();
+  isInitialized = true;
+}
+
 export function useCustomer() {
   // ===============================
-  // STATE MANAGEMENT
+  // LOCAL STATE THAT SYNCS WITH GLOBAL
   // ===============================
 
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [templates, setTemplates] = useState<BusinessTemplate[]>([]);
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
-  const [selectedTemplate, setSelectedTemplate] = useState<BusinessTemplate | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [loading, setLoading] = useState<LoadingState>({
-    scan: false,
-    fill: false,
-    upload: false,
-    save: false,
-  });
-  const [extractedFields, setExtractedFields] = useState<FormField[]>([]);
-  const [fieldMapping, setFieldMapping] = useState<Record<string, any>>({});
-  const [showMappingInterface, setShowMappingInterface] = useState(false);
-  const [pendingTemplate, setPendingTemplate] = useState<PendingTemplate | null>(null);
-  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [customers, setCustomers] = useState<Customer[]>(() => [...globalCustomers]);
+  const [templates, setTemplates] = useState<BusinessTemplate[]>(() => [...globalTemplates]);
+  const [selectedCustomer, setSelectedCustomerLocal] = useState<Customer | null>(globalSelectedCustomer);
+  const [selectedTemplate, setSelectedTemplateLocal] = useState<BusinessTemplate | null>(globalSelectedTemplate);
+  const [loading, setLoadingLocal] = useState<LoadingState>(() => ({ ...globalLoading }));
+  const [extractedFields, setExtractedFieldsLocal] = useState<FormField[]>(() => [...globalExtractedFields]);
+  const [fieldMapping, setFieldMappingLocal] = useState<Record<string, any>>(() => ({ ...globalFieldMapping }));
+  const [showMappingInterface, setShowMappingInterfaceLocal] = useState<boolean>(globalShowMappingInterface);
+  const [pendingTemplate, setPendingTemplateLocal] = useState<PendingTemplate | null>(globalPendingTemplate);
+  const [editingCustomer, setEditingCustomerLocal] = useState<Customer | null>(globalEditingCustomer);
+  const [, forceUpdate] = useState({});
+
+  // Register this hook instance for global updates
+  useEffect(() => {
+    const updateThis = () => {
+      console.log('[useCustomer] Updating hook instance with global state');
+      setCustomers([...globalCustomers]);
+      setTemplates([...globalTemplates]);
+      setSelectedCustomerLocal(globalSelectedCustomer);
+      setSelectedTemplateLocal(globalSelectedTemplate);
+      setLoadingLocal({ ...globalLoading });
+      setExtractedFieldsLocal([...globalExtractedFields]);
+      setFieldMappingLocal({ ...globalFieldMapping });
+      setShowMappingInterfaceLocal(globalShowMappingInterface);
+      setPendingTemplateLocal(globalPendingTemplate);
+      setEditingCustomerLocal(globalEditingCustomer);
+      forceUpdate({});
+    };
+
+    updateFunctions.add(updateThis);
+    
+    return () => {
+      updateFunctions.delete(updateThis);
+    };
+  }, []);
 
   // ===============================
   // UTILITY FUNCTIONS
   // ===============================
 
-  /**
-   * Update loading state for a specific operation
-   */
   const setLoadingState = useCallback((operation: keyof LoadingState, isLoading: boolean) => {
-    setLoading(prev => ({ ...prev, [operation]: isLoading }));
+    globalLoading = { ...globalLoading, [operation]: isLoading };
+    triggerGlobalUpdate();
   }, []);
 
-  /**
-   * Create a standardized operation result
-   */
   const createResult = (success: boolean, data?: any, error?: string): OperationResult => ({
     success,
     ...(data && { ...data }),
     ...(error && { error }),
   });
 
-  /**
-   * Validate if current tab supports messaging operations
-   */
   const validateCurrentTab = async (): Promise<OperationResult> => {
     try {
       const currentTab = await messaging.getActiveTab();
@@ -169,187 +266,305 @@ export function useCustomer() {
   };
 
   // ===============================
+  // PHONE NUMBER UTILITIES
+  // ===============================
+
+  const cleanPhoneNumber = useCallback((phone: string) => {
+    if (!phone) return '';
+    return phone.toString().replace(/[^\d]/g, '');
+  }, []);
+
+  const normalizePhoneNumber = useCallback((phone: string) => {
+    const cleaned = cleanPhoneNumber(phone);
+    if (cleaned.length === 10) {
+      return cleaned;
+    } else if (cleaned.length === 11 && cleaned.startsWith('1')) {
+      return cleaned.slice(1);
+    } else if (cleaned.length === 12 && cleaned.startsWith('91')) {
+      return cleaned.slice(2);
+    }
+    return cleaned;
+  }, [cleanPhoneNumber]);
+
+  const isPhoneNumberMatch = useCallback((customerPhone: string, searchQuery: string): boolean => {
+    if (!customerPhone || !searchQuery) return false;
+    
+    const normalizedCustomerPhone = normalizePhoneNumber(customerPhone);
+    const normalizedSearchQuery = normalizePhoneNumber(searchQuery);
+    
+    if (/^\d+$/.test(normalizedSearchQuery)) {
+      if (normalizedCustomerPhone === normalizedSearchQuery) return true;
+      if (normalizedCustomerPhone.startsWith(normalizedSearchQuery)) return true;
+      if (normalizedCustomerPhone.includes(normalizedSearchQuery)) return true;
+    }
+    
+    return false;
+  }, [normalizePhoneNumber]);
+
+  // ===============================
+  // GLOBAL STATE SETTERS
+  // ===============================
+
+  const setSelectedCustomer = useCallback((customer: Customer | null) => {
+    console.log('[useCustomer] Setting selected customer:', customer?.name || 'null');
+    globalSelectedCustomer = customer;
+    triggerGlobalUpdate();
+  }, []);
+
+  const setSelectedTemplate = useCallback((template: BusinessTemplate | null) => {
+    console.log('[useCustomer] Setting selected template:', template?.name || 'null');
+    globalSelectedTemplate = template;
+    triggerGlobalUpdate();
+  }, []);
+
+  const setEditingCustomer = useCallback((customer: Customer | null) => {
+    console.log('[useCustomer] Setting editing customer:', customer?.name || 'null');
+    globalEditingCustomer = customer;
+    triggerGlobalUpdate();
+  }, []);
+
+  // ===============================
+  // FIELD MAPPING FUNCTIONS (CONSOLIDATED)
+  // ===============================
+
+  const validateFieldMapping = useCallback((mapping: Record<string, any>): boolean => {
+    if (!mapping || typeof mapping !== 'object') {
+      console.error('[useCustomer] Invalid mapping object:', mapping);
+      return false;
+    }
+    
+    const entries = Object.entries(mapping);
+    if (entries.length === 0) {
+      return true; // Empty is valid
+    }
+    
+    for (const [key, value] of entries) {
+      if (!value || typeof value !== 'object') {
+        console.error('[useCustomer] Invalid mapping entry:', key, value);
+        return false;
+      }
+      
+      if (!value.customerField || !value.selector) {
+        console.error('[useCustomer] Incomplete mapping entry:', key, value);
+        return false;
+      }
+      
+      if (typeof value.customerField !== 'string' || typeof value.selector !== 'string') {
+        console.error('[useCustomer] Invalid mapping entry types:', key, value);
+        return false;
+      }
+    }
+    
+    return true;
+  }, []);
+
+  const setFieldMapping = useCallback((mappingOrUpdater: Record<string, any> | ((prev: Record<string, any>) => Record<string, any>)) => {
+    console.log('[useCustomer] setFieldMapping called with:', typeof mappingOrUpdater);
+    
+    let newMapping;
+    
+    if (typeof mappingOrUpdater === 'function') {
+      console.log('[useCustomer] Functional update detected, current globalFieldMapping:', globalFieldMapping);
+      newMapping = mappingOrUpdater(globalFieldMapping);
+      console.log('[useCustomer] Functional update result:', newMapping);
+    } else {
+      newMapping = mappingOrUpdater;
+      console.log('[useCustomer] Direct assignment:', newMapping);
+    }
+    
+    if (!validateFieldMapping(newMapping)) {
+      console.error('[useCustomer] Field mapping validation failed, not updating');
+      return;
+    }
+    
+    globalFieldMapping = { ...newMapping };
+    console.log('[useCustomer] Updated globalFieldMapping:', globalFieldMapping);
+    triggerGlobalUpdate();
+  }, [validateFieldMapping]);
+
+  const convertMappingToTemplateFormat = useCallback((mapping: Record<string, any>): Record<string, string[]> => {
+    console.log('[useCustomer] Converting mapping to template format:', mapping);
+    
+    if (!mapping || typeof mapping !== 'object') {
+      console.error('[useCustomer] Invalid mapping for conversion:', mapping);
+      return {};
+    }
+    
+    const templateFieldMapping: Record<string, string[]> = {};
+    
+    Object.entries(mapping).forEach(([key, mappingItem]) => {
+      if (!mappingItem || typeof mappingItem !== 'object') {
+        console.warn('[useCustomer] Invalid mapping item:', key, mappingItem);
+        return;
+      }
+      
+      const { customerField, selector } = mappingItem;
+      
+      if (!customerField || !selector || customerField === 'none') {
+        console.warn('[useCustomer] Incomplete mapping item:', key, mappingItem);
+        return;
+      }
+      
+      if (!templateFieldMapping[customerField]) {
+        templateFieldMapping[customerField] = [];
+      }
+      
+      if (!templateFieldMapping[customerField].includes(selector)) {
+        templateFieldMapping[customerField].push(selector);
+      }
+      
+      console.log('[useCustomer] Added mapping:', customerField, '->', selector);
+    });
+
+    console.log('[useCustomer] Final template field mapping:', templateFieldMapping);
+    return templateFieldMapping;
+  }, []);
+
+  const setShowMappingInterface = useCallback((show: boolean) => {
+    globalShowMappingInterface = show;
+    triggerGlobalUpdate();
+  }, []);
+
+  const setExtractedFields = useCallback((fields: FormField[]) => {
+    globalExtractedFields = fields;
+    triggerGlobalUpdate();
+  }, []);
+
+  const setPendingTemplate = useCallback((template: PendingTemplate | null) => {
+    globalPendingTemplate = template;
+    triggerGlobalUpdate();
+  }, []);
+
+  // ===============================
   // DATA ANALYSIS FUNCTIONS
   // ===============================
 
-  /**
-   * Extract all unique JSON field names from uploaded customers
-   * Used for field mapping interface
-   */
   const getJsonFieldNamesFromCustomers = useCallback((): string[] => {
     const jsonFieldNames = new Set<string>();
     
-    customers.forEach(customer => {
-      if (customer.dataSource === 'json' && customer.originalData) {
+    globalCustomers.forEach(customer => {
+      if ((customer.dataSource === 'json' || customer.dataSource === 'api') && customer.originalData) {
         Object.keys(customer.originalData).forEach(key => {
-          jsonFieldNames.add(key);
+          const value = customer.originalData[key];
+          if (value !== null && value !== undefined && value !== '' && key && key.trim() !== '') {
+            jsonFieldNames.add(key.trim());
+          }
         });
       }
     });
     
-    return Array.from(jsonFieldNames).sort();
-  }, [customers]);
+    return Array.from(jsonFieldNames).filter(field => field && field.trim() !== '').sort();
+  }, []);
 
-  /**
-   * Flatten nested object structure for easier data processing
-   */
-  const flattenObject = (obj: any, prefix = ''): Record<string, any> => {
-    const flattened: Record<string, any> = {};
+  const getJsonFieldNamesForCustomer = useCallback((customerId: string): string[] => {
+    const customer = globalCustomers.find(c => c.id === customerId);
+    if (!customer?.originalData) return [];
     
-    for (const key in obj) {
-      if (obj.hasOwnProperty(key)) {
-        const value = obj[key];
-        const newKey = prefix ? `${prefix}.${key}` : key;
-        
-        if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-          Object.assign(flattened, flattenObject(value, newKey));
-        } else if (Array.isArray(value)) {
-          flattened[newKey] = value.length > 0 ? value.join(', ') : '';
-        } else {
-          flattened[newKey] = value;
-        }
-      }
-    }
-    return flattened;
-  };
+    return Object.keys(customer.originalData)
+      .filter(key => {
+        const value = customer.originalData[key];
+        return value !== null && value !== undefined && value !== '' && key && key.trim() !== '';
+      })
+      .map(key => key.trim())
+      .filter(key => key !== '')
+      .sort();
+  }, []);
 
-  /**
-   * Intelligent field detection from JSON data
-   */
-  const detectFieldsFromData = (flatData: Record<string, any>) => {
-    const detectedFields = {
-      name: '',
-      phone: '',
-      email: '',
-      address: '',
-      company: '',
-    };
+  const detectFieldsFromData = (data: Record<string, any>) => {
+    const detected = { name: '', phone: '', email: '', address: '', company: '' };
 
-    // Direct field name mapping for common field names
-    const directFieldMapping = {
-      name: ['Customer Name', 'customer name', 'Name', 'name', 'Booking Name', 'booking name'],
-      phone: ['Contact No', 'contact no', 'Phone', 'phone', 'Mobile', 'mobile', 'Contact Number', 'contact number'],
-      email: ['Email ID', 'email id', 'Email', 'email', 'Email Address', 'email address'],
-      address: ['Address', 'address', 'Address Details', 'address details', 'Street', 'street'],
-      company: ['Company', 'company', 'Company Name', 'company name', 'Organization', 'organization']
-    };
-
-    // Try direct mapping first
-    Object.entries(directFieldMapping).forEach(([fieldType, possibleKeys]) => {
-      if (detectedFields[fieldType]) return;
+    Object.entries(FIELD_MAPPINGS).forEach(([fieldType, possibleKeys]) => {
+      if (detected[fieldType]) return;
       
       for (const key of possibleKeys) {
-        if (flatData[key] && flatData[key].toString().trim()) {
-          const value = flatData[key].toString().trim();
-          
-          if (fieldType === 'phone') {
-            const digitsOnly = value.replace(/\D/g, '');
-            if (digitsOnly.length >= PHONE_VALIDATION.MIN_DIGITS && 
-                digitsOnly.length <= PHONE_VALIDATION.MAX_DIGITS) {
-              detectedFields[fieldType] = value;
-              break;
-            }
-          } else if (fieldType === 'email') {
-            if (EMAIL_PATTERN.test(value)) {
-              detectedFields[fieldType] = value;
-              break;
-            }
-          } else {
-            detectedFields[fieldType] = value;
+        if (data[key] && !detected[fieldType]) {
+          const value = data[key].toString().trim();
+          if (value) {
+            detected[fieldType] = value;
             break;
           }
         }
       }
     });
 
-    // Fallback to pattern-based detection
-    Object.entries(flatData).forEach(([key, value]) => {
-      if (!value) return;
-      const strValue = value.toString().trim();
-      if (!strValue) return;
+    if (!detected.address) {
+      const addressParts = [];
+      if (data.address) addressParts.push(data.address);
+      if (data.city) addressParts.push(data.city);
+      if (data.state) addressParts.push(data.state);
+      if (data.pincode) addressParts.push(data.pincode);
       
-      if (!detectedFields.email && EMAIL_PATTERN.test(strValue)) {
-        detectedFields.email = strValue;
+      if (addressParts.length > 0) {
+        detected.address = addressParts.join(', ');
       }
-      
-      if (!detectedFields.phone) {
-        const digitsOnly = strValue.replace(/\D/g, '');
-        if (PHONE_VALIDATION.PATTERN.test(strValue) && 
-            digitsOnly.length >= PHONE_VALIDATION.MIN_DIGITS && 
-            digitsOnly.length <= PHONE_VALIDATION.MAX_DIGITS) {
-          detectedFields.phone = strValue;
-        }
-      }
-      
-      if (!detectedFields.name && NAME_VALIDATION.PATTERN.test(strValue)) {
-        const words = strValue.split(' ');
-        if (words.length >= NAME_VALIDATION.MIN_WORDS && 
-            words.length <= NAME_VALIDATION.MAX_WORDS &&
-            strValue.length >= NAME_VALIDATION.MIN_LENGTH && 
-            strValue.length <= NAME_VALIDATION.MAX_LENGTH) {
-          detectedFields.name = strValue;
-        }
-      }
-      
-      if (!detectedFields.company) {
-        const hasCompanyIndicator = COMPANY_INDICATORS.some(pattern => 
-          pattern.test(key) || pattern.test(strValue)
-        );
-        if (hasCompanyIndicator) {
-          detectedFields.company = strValue;
-        }
-      }
-      
-      if (!detectedFields.address && 
-          (strValue.length > ADDRESS_MIN_LENGTH || ADDRESS_PATTERN.test(strValue))) {
-        detectedFields.address = strValue;
-      }
-    });
+    }
 
-    return detectedFields;
+    return detected;
   };
 
-  /**
-   * Convert JSON data to standardized customer format
-   */
-  const convertJsonToStandardCustomer = useCallback((jsonData: any): Omit<Customer, 'id' | 'createdAt'> | null => {
+  const createNotesFromData = (data: Record<string, any>) => {
+    const importantFields = [
+      'occupation', 'budget_range', 'vehicle_model', 'variant_interest',
+      'fuel_preference', 'color_preference', 'purchase_timeline',
+      'finance_type', 'employment_type', 'sales_consultant',
+      'enquiry_source', 'current_vehicle', 'remarks'
+    ];
+    
+    const notes = [];
+    importantFields.forEach(field => {
+      if (data[field] && data[field] !== '') {
+        const value = data[field].toString();
+        if (value.length > 50) {
+          notes.push(`${field}: ${value.substring(0, 47)}...`);
+        } else {
+          notes.push(`${field}: ${value}`);
+        }
+      }
+    });
+    
+    return notes.length > 0 ? 
+      `${notes.slice(0, 3).join(' | ')}` : 
+      'Imported customer data';
+  };
+
+  const convertToStandardCustomer = useCallback((data: any, dataSource: 'api' | 'json' = 'json'): Omit<Customer, 'id' | 'createdAt'> | null => {
     try {
-      const flatData = flattenObject(jsonData);
-      const detectedFields = detectFieldsFromData(flatData);
+      console.log('[Customer Conversion] Processing flat JSON data:', { dataSource, keys: Object.keys(data) });
+
+      const detectedFields = detectFieldsFromData(data);
       
       if (!detectedFields.name && !detectedFields.phone) {
+        console.warn('[Customer Conversion] No name or phone found');
         return null;
       }
-      
-      let customerName = detectedFields.name;
-      if (!customerName) {
-        const buyerType = flatData['Buyer Type'] || flatData['Type'] || '';
-        const bookingName = flatData['Booking Name'] || '';
-        customerName = bookingName || buyerType || 'Customer';
-      }
-      
-      const keyInfo = [];
-      if (flatData['Buyer Type']) keyInfo.push(`Type: ${flatData['Buyer Type']}`);
-      if (flatData['Event Name']) keyInfo.push(`Event: ${flatData['Event Name']}`);
-      if (flatData['Booking Amount']) keyInfo.push(`Booking: ${flatData['Booking Amount']}`);
-      if (flatData['Docket No.'] || flatData['Docket No']) keyInfo.push(`Docket: ${flatData['Docket No.'] || flatData['Docket No']}`);
-      
-      const notes = keyInfo.length > 0 ? 
-        `Imported from JSON - ${keyInfo.join(' | ')}` : 
-        'Imported from JSON';
-      
-      return {
-        name: customerName,
+
+      const standardCustomer: Omit<Customer, 'id' | 'createdAt'> = {
+        name: detectedFields.name || 'Customer',
         phone: detectedFields.phone || '',
         email: detectedFields.email || undefined,
-        address: detectedFields.address || undefined,
         company: detectedFields.company || undefined,
-        notes: notes,
-        dataSource: 'json',
-        originalData: jsonData,
+        address: detectedFields.address || undefined,
+        notes: createNotesFromData(data),
+        dataSource: dataSource,
+        originalData: data,
+        ...(dataSource === 'api' && {
+          scope: data.scope || 'own',
+          created_at: data.created_at,
+          updated_at: data.updated_at,
+          synced: true,
+          downloadedAt: new Date().toISOString()
+        })
       };
+
+      console.log('[Customer Conversion] Successfully converted:', {
+        name: standardCustomer.name,
+        phone: standardCustomer.phone,
+        dataFields: Object.keys(data).length
+      });
+
+      return standardCustomer;
     } catch (error) {
-      console.error('[Customer] Error converting JSON:', error);
+      console.error('[Customer Conversion] Error:', error);
       return null;
     }
   }, []);
@@ -358,66 +573,137 @@ export function useCustomer() {
   // CUSTOMER OPERATIONS
   // ===============================
 
-  /**
-   * Load all customer and template data from storage
-   */
   const loadData = async (): Promise<void> => {
     try {
       const [savedCustomers, savedTemplates] = await Promise.all([
         indexedDBStorage.get(STORAGE_KEYS.CUSTOMERS, []),
         indexedDBStorage.get(STORAGE_KEYS.TEMPLATES, []),
       ]);
-      setCustomers(savedCustomers);
-      setTemplates(savedTemplates);
+      globalCustomers = savedCustomers;
+      globalTemplates = savedTemplates;
+      triggerGlobalUpdate();
     } catch (error) {
       console.error('[Customer] Failed to load data:', error);
     }
   };
 
-  /**
-   * Add a new customer to the system
-   */
-  const addCustomer = useCallback(async (customerData: Omit<Customer, 'id' | 'createdAt'>): Promise<Customer> => {
-    const newCustomer: Customer = {
-      ...customerData,
-      id: `customer_${Date.now()}`,
-      createdAt: Date.now(),
-      dataSource: customerData.dataSource || 'manual',
-    };
+  const addCustomer = useCallback(async (customerData: Omit<Customer, 'id' | 'createdAt'>): Promise<OperationResult> => {
+    try {
+      console.log('[useCustomer] Adding customer:', customerData.name);
+      setLoadingState('add', true);
 
-    const updatedCustomers = [...customers, newCustomer];
-    setCustomers(updatedCustomers);
-    await indexedDBStorage.set(STORAGE_KEYS.CUSTOMERS, updatedCustomers);
-    return newCustomer;
-  }, [customers]);
+      const existingCustomer = globalCustomers.find(existing => {
+        if (existing.id === customerData.id) return true;
+        if (customerData.phone && isPhoneNumberMatch(existing.phone, customerData.phone)) return true;
+        if (customerData.email && existing.email && existing.email.toLowerCase() === customerData.email.toLowerCase()) return true;
+        return false;
+      });
 
-  /**
-   * Update an existing customer
-   */
-  const updateCustomer = useCallback(async (customerId: string, updates: Partial<Customer>): Promise<void> => {
-    const updatedCustomers = customers.map(customer =>
-      customer.id === customerId ? { ...customer, ...updates } : customer
-    );
-    setCustomers(updatedCustomers);
-    await indexedDBStorage.set(STORAGE_KEYS.CUSTOMERS, updatedCustomers);
-  }, [customers]);
+      if (existingCustomer) {
+        console.log('[useCustomer] Customer already exists, updating instead:', existingCustomer.id);
+        const updatedCustomer = {
+          ...existingCustomer,
+          ...customerData,
+          originalData: {
+            ...existingCustomer.originalData,
+            ...customerData.originalData
+          }
+        };
+        
+        globalCustomers = globalCustomers.map(c => c.id === existingCustomer.id ? updatedCustomer : c);
+        await saveCustomersGlobally();
+        
+        return { success: true, customer: updatedCustomer, updated: true };
+      }
 
-  /**
-   * Delete a customer from the system
-   */
-  const deleteCustomer = useCallback(async (customerId: string): Promise<void> => {
-    const updatedCustomers = customers.filter(customer => customer.id !== customerId);
-    setCustomers(updatedCustomers);
-    await indexedDBStorage.set(STORAGE_KEYS.CUSTOMERS, updatedCustomers);
-  }, [customers]);
+      const newCustomer: Customer = {
+        ...customerData,
+        id: customerData.id || `customer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        createdAt: Date.now(),
+        dataSource: customerData.dataSource || 'manual',
+      };
 
-  /**
-   * Search for customer by phone number
-   */
+      globalCustomers = [...globalCustomers, newCustomer];
+      console.log('[useCustomer] Updated global customers, new length:', globalCustomers.length);
+      
+      await saveCustomersGlobally();
+
+      console.log('[useCustomer] Customer added successfully:', newCustomer.name);
+      return { success: true, customer: newCustomer };
+
+    } catch (error) {
+      console.error('[useCustomer] Error adding customer:', error);
+      return { success: false, error: error.message };
+    } finally {
+      setLoadingState('add', false);
+    }
+  }, [setLoadingState, isPhoneNumberMatch]);
+
+  const updateCustomer = useCallback(async (customerId: string, updates: Partial<Customer>): Promise<OperationResult> => {
+    try {
+      console.log('[useCustomer] Updating customer:', customerId);
+      
+      globalCustomers = globalCustomers.map(customer =>
+        customer.id === customerId ? { ...customer, ...updates } : customer
+      );
+      
+      await saveCustomersGlobally();
+      console.log('[useCustomer] Customer updated successfully');
+
+      return { success: true };
+    } catch (error) {
+      console.error('[useCustomer] Error updating customer:', error);
+      return { success: false, error: error.message };
+    }
+  }, []);
+
+  const deleteCustomer = useCallback(async (customerId: string): Promise<OperationResult> => {
+    try {
+      console.log('[useCustomer] Deleting customer:', customerId);
+      
+      globalCustomers = globalCustomers.filter(customer => customer.id !== customerId);
+      
+      if (globalSelectedCustomer?.id === customerId) {
+        globalSelectedCustomer = null;
+      }
+      if (globalEditingCustomer?.id === customerId) {
+        globalEditingCustomer = null;
+      }
+      
+      await saveCustomersGlobally();
+      console.log('[useCustomer] Customer deleted successfully');
+
+      return { success: true };
+    } catch (error) {
+      console.error('[useCustomer] Error deleting customer:', error);
+      return { success: false, error: error.message };
+    }
+  }, []);
+
+  const searchCustomers = useCallback((query: string): Customer[] => {
+    if (!query || query.trim().length < 2) return [];
+    
+    const cleanQuery = query.trim().toLowerCase();
+    
+    return globalCustomers.filter(customer => {
+      if (/^\d/.test(cleanQuery)) {
+        return isPhoneNumberMatch(customer.phone, cleanQuery);
+      }
+      
+      const searchFields = [
+        customer.name,
+        customer.email,
+        customer.company,
+        customer.notes
+      ].filter(Boolean).map(field => field.toLowerCase());
+      
+      return searchFields.some(field => field.includes(cleanQuery));
+    });
+  }, [isPhoneNumberMatch]);
+
   const searchByPhone = useCallback((phone: string): Customer | null => {
-    const cleanPhone = phone.replace(/\s/g, '');
-    const found = customers.find(customer => 
-      customer.phone.includes(cleanPhone)
+    const found = globalCustomers.find(customer => 
+      isPhoneNumberMatch(customer.phone, phone)
     );
     
     if (found) {
@@ -425,33 +711,24 @@ export function useCustomer() {
       return found;
     }
     return null;
-  }, [customers]);
+  }, [setSelectedCustomer, isPhoneNumberMatch]);
 
   // ===============================
   // FILE OPERATIONS
   // ===============================
 
-  /**
-   * Validate uploaded file type
-   */
   const validateFileType = (file: File): boolean => {
     const fileName = file.name.toLowerCase();
-    const hasValidExtension = SUPPORTED_FILE_TYPES.JSON.some(ext => fileName.endsWith(`.${ext}`));
-    const hasValidMimeType = SUPPORTED_FILE_TYPES.MIME_TYPES.includes(file.type);
-    
-    return hasValidExtension || hasValidMimeType;
+    return fileName.endsWith('.json') || file.type === 'application/json';
   };
 
-  /**
-   * Process JSON data from uploaded file
-   */
   const processJsonData = async (data: any): Promise<{ imported: number; errors: string[] }> => {
     let imported = 0;
     const errors: string[] = [];
 
     if (!Array.isArray(data) && typeof data === 'object' && data !== null) {
       try {
-        const customer = convertJsonToStandardCustomer(data);
+        const customer = convertToStandardCustomer(data, 'json');
         if (customer) {
           await addCustomer(customer);
           imported = 1;
@@ -466,7 +743,7 @@ export function useCustomer() {
         const item = data[i];
         if (typeof item === 'object' && item !== null) {
           try {
-            const customer = convertJsonToStandardCustomer(item);
+            const customer = convertToStandardCustomer(item, 'json');
             if (customer) {
               await addCustomer(customer);
               imported++;
@@ -485,9 +762,6 @@ export function useCustomer() {
     return { imported, errors };
   };
 
-  /**
-   * Handle file upload and processing
-   */
   const handleFileUpload = useCallback(async (file: File): Promise<OperationResult> => {
     setLoadingState('upload', true);
     
@@ -521,15 +795,12 @@ export function useCustomer() {
     } finally {
       setLoadingState('upload', false);
     }
-  }, [addCustomer, convertJsonToStandardCustomer]);
+  }, [addCustomer, setLoadingState]);
 
   // ===============================
   // TEMPLATE OPERATIONS
   // ===============================
 
-  /**
-   * Save a new business template
-   */
   const saveTemplate = useCallback(async (templateData: Omit<BusinessTemplate, 'id' | 'createdAt'>): Promise<BusinessTemplate> => {
     const newTemplate: BusinessTemplate = {
       ...templateData,
@@ -537,39 +808,27 @@ export function useCustomer() {
       createdAt: Date.now(),
     };
 
-    const updatedTemplates = [...templates, newTemplate];
-    setTemplates(updatedTemplates);
-    await indexedDBStorage.set(STORAGE_KEYS.TEMPLATES, updatedTemplates);
+    globalTemplates = [...globalTemplates, newTemplate];
+    await saveTemplatesGlobally();
     return newTemplate;
-  }, [templates]);
+  }, []);
 
-  /**
-   * Update an existing template
-   */
   const updateTemplate = useCallback(async (templateId: string, updates: Partial<BusinessTemplate>): Promise<void> => {
-    const updatedTemplates = templates.map(template =>
+    globalTemplates = globalTemplates.map(template =>
       template.id === templateId ? { ...template, ...updates } : template
     );
-    setTemplates(updatedTemplates);
-    await indexedDBStorage.set(STORAGE_KEYS.TEMPLATES, updatedTemplates);
-  }, [templates]);
+    await saveTemplatesGlobally();
+  }, []);
 
-  /**
-   * Delete a template
-   */
   const deleteTemplate = useCallback(async (templateId: string): Promise<void> => {
-    const updatedTemplates = templates.filter(template => template.id !== templateId);
-    setTemplates(updatedTemplates);
-    await indexedDBStorage.set(STORAGE_KEYS.TEMPLATES, updatedTemplates);
-  }, [templates]);
+    globalTemplates = globalTemplates.filter(template => template.id !== templateId);
+    await saveTemplatesGlobally();
+  }, []);
 
   // ===============================
   // FORM OPERATIONS
   // ===============================
 
-  /**
-   * Extract form fields from the current page
-   */
   const extractFormFields = useCallback(async (): Promise<OperationResult> => {
     setLoadingState('scan', true);
     
@@ -594,11 +853,8 @@ export function useCustomer() {
     } finally {
       setLoadingState('scan', false);
     }
-  }, []);
+  }, [setLoadingState]);
 
-  /**
-   * Build customer data object for form filling
-   */
   const buildCustomerDataObject = (customer: Customer): Record<string, string> => {
     return {
       name: customer.name || '',
@@ -611,11 +867,8 @@ export function useCustomer() {
     };
   };
 
-  /**
-   * Auto-fill form with customer data using selected template
-   */
   const autoFillForm = useCallback(async (): Promise<OperationResult> => {
-    if (!selectedCustomer || !selectedTemplate) {
+    if (!globalSelectedCustomer || !globalSelectedTemplate) {
       return createResult(false, null, 'Select customer and template first');
     }
 
@@ -627,13 +880,13 @@ export function useCustomer() {
         return tabValidation;
       }
 
-      const customerData = buildCustomerDataObject(selectedCustomer);
+      const customerData = buildCustomerDataObject(globalSelectedCustomer);
 
       const response = await messaging.sendToContent({
         type: 'fillFormWithMapping',
         data: {
           customerData,
-          fieldMapping: selectedTemplate.fieldMapping
+          fieldMapping: globalSelectedTemplate.fieldMapping
         }
       });
 
@@ -649,11 +902,8 @@ export function useCustomer() {
     } finally {
       setLoadingState('fill', false);
     }
-  }, [selectedCustomer, selectedTemplate]);
+  }, [setLoadingState]);
 
-  /**
-   * Save extracted form fields data
-   */
   const saveExtractedFields = useCallback(async (data: {
     templateName: string;
     fields: FormField[];
@@ -696,46 +946,40 @@ export function useCustomer() {
   }, []);
 
   // ===============================
-  // MAPPING OPERATIONS
+  // MAPPING OPERATIONS (CONSOLIDATED)
   // ===============================
 
-  /**
-   * Convert UI mapping format to template field mapping format
-   */
-  const convertMappingToTemplateFormat = (mapping: Record<string, any>): Record<string, string[]> => {
-    const templateFieldMapping: Record<string, string[]> = {};
-    
-    Object.values(mapping).forEach((mappingItem: any) => {
-      if (mappingItem && mappingItem.customerField && mappingItem.selector) {
-        const jsonFieldName = mappingItem.customerField;
-        const selector = mappingItem.selector;
-        
-        if (!templateFieldMapping[jsonFieldName]) {
-          templateFieldMapping[jsonFieldName] = [];
-        }
-        templateFieldMapping[jsonFieldName].push(selector);
-      }
-    });
-
-    return templateFieldMapping;
-  };
-
-  /**
-   * Create a new template from field mapping
-   */
   const createMappingFromFields = useCallback(async (mapping: Record<string, any>): Promise<OperationResult> => {
-    if (!pendingTemplate || Object.keys(mapping).length === 0) {
-      return createResult(false, null, 'Invalid mapping data');
+    console.log('[useCustomer] Creating mapping from fields:', mapping);
+    
+    if (!globalPendingTemplate) {
+      const error = 'No pending template found';
+      console.error('[useCustomer]', error);
+      return createResult(false, null, error);
+    }
+
+    if (!mapping || typeof mapping !== 'object' || Object.keys(mapping).length === 0) {
+      const error = 'Invalid or empty mapping data';
+      console.error('[useCustomer]', error);
+      return createResult(false, null, error);
     }
 
     try {
       const templateFieldMapping = convertMappingToTemplateFormat(mapping);
+      
+      if (Object.keys(templateFieldMapping).length === 0) {
+        const error = 'No valid mappings found after conversion';
+        console.error('[useCustomer]', error);
+        return createResult(false, null, error);
+      }
+
+      console.log('[useCustomer] Creating template with mapping:', templateFieldMapping);
       
       const template = await saveTemplate({
-        name: pendingTemplate.name,
-        url: pendingTemplate.domain,
+        name: globalPendingTemplate.name,
+        url: globalPendingTemplate.domain,
         fieldMapping: templateFieldMapping,
-        extractedFields,
+        extractedFields: globalExtractedFields,
       });
 
       setShowMappingInterface(false);
@@ -743,28 +987,51 @@ export function useCustomer() {
       setExtractedFields([]);
       setPendingTemplate(null);
       
+      console.log('[useCustomer] Template created successfully:', template);
       return createResult(true, { template });
     } catch (error) {
+      console.error('[useCustomer] Error creating mapping:', error);
       return createResult(false, null, error.message);
     }
-  }, [pendingTemplate, extractedFields, saveTemplate]);
+  }, [saveTemplate, convertMappingToTemplateFormat, setShowMappingInterface, setFieldMapping, setExtractedFields, setPendingTemplate]);
 
-  /**
-   * Update existing template with new field mapping
-   */
   const updateMappingFromFields = useCallback(async (templateId: string, mapping: Record<string, any>): Promise<OperationResult> => {
-    if (!pendingTemplate || Object.keys(mapping).length === 0) {
-      return createResult(false, null, 'Invalid mapping data');
+    console.log('[useCustomer] Updating mapping from fields:', templateId, mapping);
+    
+    if (!globalPendingTemplate) {
+      const error = 'No pending template found';
+      console.error('[useCustomer]', error);
+      return createResult(false, null, error);
+    }
+
+    if (!mapping || typeof mapping !== 'object' || Object.keys(mapping).length === 0) {
+      const error = 'Invalid or empty mapping data';
+      console.error('[useCustomer]', error);
+      return createResult(false, null, error);
+    }
+
+    if (!templateId) {
+      const error = 'No template ID provided';
+      console.error('[useCustomer]', error);
+      return createResult(false, null, error);
     }
 
     try {
       const templateFieldMapping = convertMappingToTemplateFormat(mapping);
       
+      if (Object.keys(templateFieldMapping).length === 0) {
+        const error = 'No valid mappings found after conversion';
+        console.error('[useCustomer]', error);
+        return createResult(false, null, error);
+      }
+
+      console.log('[useCustomer] Updating template with mapping:', templateFieldMapping);
+      
       await updateTemplate(templateId, {
-        name: pendingTemplate.name,
-        url: pendingTemplate.domain,
+        name: globalPendingTemplate.name,
+        url: globalPendingTemplate.domain,
         fieldMapping: templateFieldMapping,
-        extractedFields,
+        extractedFields: globalExtractedFields,
       });
 
       setShowMappingInterface(false);
@@ -772,19 +1039,18 @@ export function useCustomer() {
       setExtractedFields([]);
       setPendingTemplate(null);
       
+      console.log('[useCustomer] Template updated successfully');
       return createResult(true);
     } catch (error) {
+      console.error('[useCustomer] Error updating mapping:', error);
       return createResult(false, null, error.message);
     }
-  }, [pendingTemplate, extractedFields, updateTemplate]);
+  }, [updateTemplate, convertMappingToTemplateFormat, setShowMappingInterface, setFieldMapping, setExtractedFields, setPendingTemplate]);
 
   // ===============================
   // UTILITY OPERATIONS
   // ===============================
 
-  /**
-   * Check for previously extracted fields in storage
-   */
   const checkForExtractedFields = useCallback(async (): Promise<boolean> => {
     try {
       const pending = await indexedDBStorage.get(STORAGE_KEYS.PENDING_EXTRACTION, null);
@@ -806,6 +1072,17 @@ export function useCustomer() {
       console.error('[Customer] Failed to check extracted fields:', error);
       return false;
     }
+  }, [setExtractedFields, setPendingTemplate, setShowMappingInterface]);
+
+  const refreshCustomers = useCallback(async () => {
+    try {
+      const savedCustomers = await indexedDBStorage.get(STORAGE_KEYS.CUSTOMERS, []);
+      globalCustomers = savedCustomers;
+      console.log('[useCustomer] Force refreshed customers:', globalCustomers.length);
+      triggerGlobalUpdate();
+    } catch (error) {
+      console.error('[useCustomer] Error refreshing customers:', error);
+    }
   }, []);
 
   // ===============================
@@ -822,13 +1099,15 @@ export function useCustomer() {
   // ===============================
 
   const computedProperties = {
-    hasCustomers: customers.length > 0,
-    hasTemplates: templates.length > 0,
-    canAutoFill: selectedCustomer && selectedTemplate,
-    totalCustomers: customers.length,
-    totalTemplates: templates.length,
-    jsonCustomersCount: customers.filter(c => c.dataSource === 'json').length,
-    manualCustomersCount: customers.filter(c => c.dataSource === 'manual').length,
+    hasCustomers: globalCustomers.length > 0,
+    hasTemplates: globalTemplates.length > 0,
+    canAutoFill: globalSelectedCustomer && globalSelectedTemplate,
+    totalCustomers: globalCustomers.length,
+    totalTemplates: globalTemplates.length,
+    jsonCustomersCount: globalCustomers.filter(c => c.dataSource === 'json').length,
+    manualCustomersCount: globalCustomers.filter(c => c.dataSource === 'manual').length,
+    downloadedCustomersCount: globalCustomers.filter(c => c.dataSource === 'api').length,
+    customersWithDataCount: globalCustomers.filter(c => c.originalData && Object.keys(c.originalData).length > 0).length,
   };
 
   // ===============================
@@ -841,7 +1120,6 @@ export function useCustomer() {
     templates,
     selectedCustomer,
     selectedTemplate,
-    searchQuery,
     loading,
     extractedFields,
     fieldMapping,
@@ -854,6 +1132,7 @@ export function useCustomer() {
     addCustomer,
     updateCustomer,
     deleteCustomer,
+    searchCustomers,
     searchByPhone,
     
     // Template Operations
@@ -879,15 +1158,31 @@ export function useCustomer() {
     setPendingTemplate,
     
     // UI State Management
-    setSearchQuery,
     setEditingCustomer,
     
     // Utility Functions
-    convertJsonToStandardCustomer,
+    convertToStandardCustomer,
     getJsonFieldNamesFromCustomers,
+    getJsonFieldNamesForCustomer,
     checkForExtractedFields,
+    refreshCustomers,
+    cleanPhoneNumber,
+    normalizePhoneNumber,
+    isPhoneNumberMatch,
+    validateFieldMapping,
     
     // Computed Properties
     ...computedProperties,
+
+    // Debug info
+    debugInfo: {
+      customersCount: globalCustomers.length,
+      templatesCount: globalTemplates.length,
+      selectedCustomerId: globalSelectedCustomer?.id,
+      selectedTemplateId: globalSelectedTemplate?.id,
+      hookInstances: updateFunctions.size,
+      downloadedCustomers: globalCustomers.filter(c => c.dataSource === 'api').length,
+      customersWithData: globalCustomers.filter(c => c.originalData && Object.keys(c.originalData).length > 0).length,
+    }
   };
 }

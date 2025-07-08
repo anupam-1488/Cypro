@@ -29,7 +29,12 @@ export default function ExtensionHeader({
     <header className={`flex w-full items-center justify-between   bg-background ${className}`}>
       {/* Left side - Logo only */}
       <div className="flex items-center">
-        {logo}
+        {/* {logo} */}
+        <img
+          className="w-12 h-12"
+          src="icons/icon-32.png"
+          alt="Voila Logo"
+        />
       </div>
 
       {/* Right side - Actions only */}

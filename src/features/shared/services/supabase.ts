@@ -192,20 +192,39 @@ export const appKitHelpers = {
   /**
    * Store AppKit token in localStorage
    */
-  storeAppKitToken: (tokenData: AppKitTokenResponse) => {
-    try {
-      const tokenInfo = {
-        ...tokenData,
-        timestamp: Date.now(),
-        storedAt: new Date().toISOString()
-      }
-      
-      window.localStorage.setItem(APPKIT_TOKEN_KEY, JSON.stringify(tokenInfo))
-      console.log('[AppKit] Token stored successfully')
-    } catch (error) {
-      console.error('[AppKit] Error storing token:', error)
+storeAppKitToken: (tokenData: AppKitTokenResponse) => {
+  try {
+    console.log('[AppKit] Storing token data:', tokenData);
+    
+    // Handle the nested response format from your server
+    let actualTokenData;
+    
+    if (tokenData.success && tokenData.data) {
+      // Server returns: {success: true, data: {token: "...", user: {...}}}
+      // We need to flatten it to: {token: "...", user: {...}}
+      actualTokenData = tokenData.data;
+      console.log('[AppKit] Extracted nested token data:', actualTokenData);
+    } else if (tokenData.token) {
+      // Direct token format: {token: "...", user: {...}}
+      actualTokenData = tokenData;
+    } else {
+      throw new Error('Invalid token data format');
     }
-  },
+    
+    const tokenInfo = {
+      ...actualTokenData,              // Flattened token data (token, user, expires_at)
+      timestamp: Date.now(),           // When it was stored
+      storedAt: new Date().toISOString() // Human readable timestamp
+    };
+    
+    console.log('[AppKit] Final token info to store:', tokenInfo);
+    
+    window.localStorage.setItem(APPKIT_TOKEN_KEY, JSON.stringify(tokenInfo));
+    console.log('[AppKit] Token stored successfully');
+  } catch (error) {
+    console.error('[AppKit] Error storing token:', error);
+  }
+},
   
   /**
    * Get stored AppKit token
