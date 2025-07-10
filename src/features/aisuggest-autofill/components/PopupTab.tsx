@@ -30,6 +30,9 @@ import {
   Globe,
   Car,
   Database,
+  Wifi,
+  WifiOff,
+  Settings,
 } from 'lucide-react';
 import { messaging } from '@voilajsx/comet/messaging';
 import { useCustomer } from '../../shared/hooks/useCustomer';
@@ -54,13 +57,27 @@ interface Customer {
   downloadedAt?: string;
 }
 
-// Constants
+interface ApiCustomer {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  custom_fields?: Record<string, any>;
+  scope?: 'own' | 'tenant' | 'org';
+  tenant_id?: string;
+  created_by?: string;
+  active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// Constants - REDUCED for immediate response
 const FEEDBACK_DURATION = {
   DEFAULT: 2000,
   SUCCESS: 1500,
 } as const;
 
-const SEARCH_DEBOUNCE_MS = 300;
+const SEARCH_DEBOUNCE_MS = 150; // Slightly increased for API calls
 
 // Utility functions
 const formatPhoneNumber = (phone: string) => {
@@ -107,95 +124,112 @@ const isTextMatch = (text: string, searchQuery: string): boolean => {
   return text.toLowerCase().includes(searchQuery.toLowerCase());
 };
 
-// Customer conversion for flat JSON structure
-const convertToStandardCustomer = (
-  data: any, 
-  dataSource: 'api' | 'json' = 'api'
-): Omit<Customer, 'id' | 'createdAt'> | null => {
+// Customer conversion from API format to internal format
+const convertApiCustomerToStandardCustomer = (
+  apiCustomer: ApiCustomer, 
+  isLocal: boolean = false
+): Customer => {
   try {
-    console.log('[Customer Conversion] Processing flat JSON data:', { dataSource, data });
+    console.log('[Customer Conversion] Processing API customer:', { id: apiCustomer.id, name: apiCustomer.name });
 
-    // Extract key fields from flat structure
-    const name = data.customer_name || data.name || data['Customer Name'] || '';
-    const phone = data.phone || data.mobile || data.contact || data['Contact No'] || '';
-    const email = data.email || data['Email ID'] || '';
-    const company = data.company_name || data.company || data['Company Name'] || '';
+    // Extract display fields
+    const name = apiCustomer.name || 'Customer';
+    const phone = apiCustomer.phone || '';
+    const email = apiCustomer.email || '';
     
-    // Combine address from multiple fields if needed
-    let address = data.address || data['Address'] || '';
-    if (!address && (data.city || data.state || data.pincode)) {
+    // Extract company from custom_fields
+    const company = apiCustomer.custom_fields?.company_name || 
+                   apiCustomer.custom_fields?.company || '';
+    
+    // Build address from custom_fields
+    let address = apiCustomer.custom_fields?.address || '';
+    if (!address && apiCustomer.custom_fields) {
       const addressParts = [];
-      if (data.city) addressParts.push(data.city);
-      if (data.state) addressParts.push(data.state);
-      if (data.pincode) addressParts.push(data.pincode);
-      address = addressParts.join(', ');
+      if (apiCustomer.custom_fields.city) addressParts.push(apiCustomer.custom_fields.city);
+      if (apiCustomer.custom_fields.state) addressParts.push(apiCustomer.custom_fields.state);
+      if (apiCustomer.custom_fields.pincode) addressParts.push(apiCustomer.custom_fields.pincode);
+      if (addressParts.length > 0) {
+        address = addressParts.join(', ');
+      }
     }
 
-    if (!name && !phone) {
-      console.warn('[Customer Conversion] No name or phone found');
-      return null;
-    }
-
-    // Create rich notes from the data
+    // Create notes from important fields
     const createNotes = () => {
+      if (!apiCustomer.custom_fields) return 'API customer';
+      
       const importantFields = [
-        'occupation', 'budget_range', 'vehicle_model', 'variant_interest',
-        'fuel_preference', 'color_preference', 'purchase_timeline',
-        'finance_type', 'employment_type', 'sales_consultant',
-        'enquiry_source', 'current_vehicle'
+        'occupation', 'vehicle_model_interest', 'budget_min', 'budget_max', 'budget_range',
+        'sales_stage', 'priority_level', 'purchase_timeline', 'lead_source'
       ];
       
       const notes = [];
       importantFields.forEach(field => {
-        if (data[field] && data[field] !== '') {
-          notes.push(`${field}: ${data[field]}`);
+        const value = apiCustomer.custom_fields[field];
+        if (value && value !== '') {
+          notes.push(`${field}: ${value}`);
         }
       });
       
       return notes.length > 0 ? 
         `${notes.slice(0, 3).join(' | ')}` : 
-        dataSource === 'api' ? 'Downloaded customer' : 'Imported customer';
+        'API customer';
     };
 
-    const standardCustomer: Omit<Customer, 'id' | 'createdAt'> = {
+    const standardCustomer: Customer = {
+      id: apiCustomer.id,
       name: name,
       phone: phone,
       email: email || undefined,
       company: company || undefined,
       address: address || undefined,
       notes: createNotes(),
-      dataSource: dataSource,
-      originalData: data, // Keep all original flat data for comprehensive mapping
-      ...(dataSource === 'api' && {
-        scope: data.scope || 'own',
-        created_at: data.created_at,
-        updated_at: data.updated_at,
-        synced: true,
-        downloadedAt: new Date().toISOString()
-      })
+      dataSource: 'api',
+      originalData: {
+        ...apiCustomer,
+        // Flatten custom_fields for easier access
+        ...(apiCustomer.custom_fields || {})
+      },
+      scope: apiCustomer.scope || 'own',
+      created_at: apiCustomer.created_at,
+      updated_at: apiCustomer.updated_at,
+      synced: true,
+      downloadedAt: new Date().toISOString(),
+      createdAt: Date.now(), // Required field for internal format
     };
 
     console.log('[Customer Conversion] Successfully converted:', {
+      id: standardCustomer.id,
       name: standardCustomer.name,
       phone: standardCustomer.phone,
-      dataFields: Object.keys(data).length
+      dataFields: Object.keys(standardCustomer.originalData || {}).length
     });
 
     return standardCustomer;
   } catch (error) {
     console.error('[Customer Conversion] Error:', error);
-    return null;
+    // Return minimal customer object on error
+    return {
+      id: apiCustomer.id || `error_${Date.now()}`,
+      name: apiCustomer.name || 'Customer',
+      phone: apiCustomer.phone || '',
+      email: apiCustomer.email,
+      dataSource: 'api',
+      createdAt: Date.now(),
+      notes: 'Conversion error',
+      originalData: apiCustomer
+    };
   }
 };
 
-// Real-time search dropdown component
+// Real-time search dropdown component with enhanced API status
 const SearchDropdown = ({ 
   searchResults, 
   isSearching, 
   onSelectResult, 
   searchQuery,
   isOpen,
-  onClose
+  onClose,
+  apiStatus = 'unknown'
 }) => {
   if (!isOpen || (!isSearching && searchResults.length === 0)) {
     return null;
@@ -203,16 +237,43 @@ const SearchDropdown = ({
 
   return (
     <div className="absolute top-full left-0 right-0 z-50 bg-white border border-gray-200 rounded-md shadow-lg max-h-64 overflow-y-auto">
-      {isSearching && (
-        <div className="p-3 text-center text-sm text-muted-foreground">
-          <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-          Searching...
+      {/* API Status Header */}
+      <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 flex items-center justify-between text-xs">
+        <div className="flex items-center gap-2">
+          {apiStatus === 'ready' ? (
+            <>
+              <Wifi className="w-3 h-3 text-green-500" />
+              <span className="text-green-700">API Connected</span>
+            </>
+          ) : apiStatus === 'error' ? (
+            <>
+              <WifiOff className="w-3 h-3 text-red-500" />
+              <span className="text-red-700">API Error</span>
+            </>
+          ) : (
+            <>
+              <WifiOff className="w-3 h-3 text-gray-500" />
+              <span className="text-gray-600">API Not Ready</span>
+            </>
+          )}
         </div>
-      )}
-      
+        {isSearching && (
+          <div className="flex items-center gap-1 text-blue-600">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Searching...</span>
+          </div>
+        )}
+      </div>
+
+      {/* Search Results */}
       {!isSearching && searchResults.length === 0 && searchQuery && (
         <div className="p-3 text-center text-sm text-muted-foreground">
           No customers found for "{searchQuery}"
+          {apiStatus !== 'ready' && (
+            <div className="text-xs text-red-500 mt-1">
+              API not connected - only local results shown
+            </div>
+          )}
         </div>
       )}
       
@@ -226,12 +287,22 @@ const SearchDropdown = ({
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1">
                 <span className="font-medium text-sm">
-                  {result.customer_name || result.name || 'Customer'}
+                  {result.name || 'Customer'}
                 </span>
+                
+                {/* Source Badge */}
                 <Badge variant="outline" className="text-xs">
-                  {result.scope === 'own' ? 'Personal' : 
-                   result.scope === 'tenant' ? 'Company' : 'Organization'}
+                  {result.isLocal ? '💾 Local' : '🌐 API'}
                 </Badge>
+                
+                {/* Scope Badge */}
+                {result.scope && (
+                  <Badge variant="outline" className="text-xs">
+                    {result.scope === 'own' ? '👤 Personal' : 
+                     result.scope === 'tenant' ? '🏢 Company' : '🏛️ Organization'}
+                  </Badge>
+                )}
+                
                 {result.isDownloaded && (
                   <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">
                     ✅ Downloaded
@@ -241,24 +312,26 @@ const SearchDropdown = ({
               <div className="text-xs text-muted-foreground">
                 📞 {formatPhoneNumber(result.phone)}
                 {result.email && ` • 📧 ${result.email}`}
-                {result.company_name && ` • 🏢 ${result.company_name}`}
+                {result.company && ` • 🏢 ${result.company}`}
               </div>
               
-              {/* Enhanced info display for flat JSON */}
-              <div className="text-xs text-blue-600 mt-1 space-y-1">
-                {result.occupation && (
-                  <div>👨‍💼 {result.occupation}</div>
-                )}
-                {result.vehicle_model && (
-                  <div>🚗 {result.vehicle_model}</div>
-                )}
-                {result.budget_range && (
-                  <div>💰 {result.budget_range}</div>
-                )}
-                {result.purchase_timeline && (
-                  <div>📅 {result.purchase_timeline}</div>
-                )}
-              </div>
+              {/* Enhanced info display */}
+              {result.originalData && (
+                <div className="text-xs text-blue-600 mt-1 space-y-1">
+                  {result.originalData.occupation && (
+                    <div>👨‍💼 {result.originalData.occupation}</div>
+                  )}
+                  {(result.originalData.vehicle_model_interest || result.originalData.vehicle_model) && (
+                    <div>🚗 {result.originalData.vehicle_model_interest || result.originalData.vehicle_model}</div>
+                  )}
+                  {(result.originalData.budget_range || result.originalData.budget_min) && (
+                    <div>💰 {result.originalData.budget_range || `${result.originalData.budget_min}-${result.originalData.budget_max}`}</div>
+                  )}
+                  {(result.originalData.sales_stage) && (
+                    <div>📈 {result.originalData.sales_stage}</div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="ml-2">
               {result.isDownloaded ? (
@@ -298,6 +371,7 @@ export default function PopupTab({ value }: PopupTabProps) {
   const [isSearching, setIsSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [recentSearches, setRecentSearches] = useState([]);
+  const [apiStatus, setApiStatus] = useState('unknown'); // 'ready', 'error', 'unknown'
   
   // UI states
   const [feedback, setFeedback] = useState(null);
@@ -308,6 +382,74 @@ export default function PopupTab({ value }: PopupTabProps) {
   const searchInputRef = useRef(null);
   const searchTimeoutRef = useRef(null);
   const dropdownRef = useRef(null);
+  const searchAbortRef = useRef(null);
+
+  // Initialize API on component mount
+  useEffect(() => {
+    checkApiStatus();
+    
+    // Add debug info to console
+    console.log('[PopupTab] Component mounted, checking API status...');
+    if (typeof window !== 'undefined') {
+      // Debug token storage
+      const appKitToken = localStorage.getItem('cyepro_appkit_token');
+      const appKitSettings = localStorage.getItem('appkit_settings');
+      console.log('[PopupTab] Debug - AppKit Token exists:', !!appKitToken);
+      console.log('[PopupTab] Debug - AppKit Settings exists:', !!appKitSettings);
+      
+      if (appKitToken) {
+        try {
+          const tokenData = JSON.parse(appKitToken);
+          console.log('[PopupTab] Debug - Token has data:', !!tokenData.token);
+          console.log('[PopupTab] Debug - Token stored at:', tokenData.storedAt);
+        } catch (error) {
+          console.error('[PopupTab] Debug - Token parse error:', error);
+        }
+      }
+    }
+  }, []);
+
+  const checkApiStatus = async () => {
+    try {
+      console.log('[PopupTab] Checking API status...');
+      
+      // Check if API is configured and has token
+      const config = appKitApi.getConfig();
+      console.log('[PopupTab] API Config:', {
+        baseUrl: config.baseUrl,
+        hasToken: config.hasToken,
+        timeout: config.timeout
+      });
+      
+      if (!config.baseUrl || config.baseUrl === 'https://your-api-domain.com') {
+        console.log('[PopupTab] API not ready - invalid base URL:', config.baseUrl);
+        setApiStatus('error');
+        return;
+      }
+      
+      if (!config.hasToken) {
+        console.log('[PopupTab] API not ready - missing token');
+        setApiStatus('error');
+        return;
+      }
+
+      // Test API connection
+      console.log('[PopupTab] Testing API connection to:', config.baseUrl);
+      const testResult = await appKitApi.testConnection();
+      console.log('[PopupTab] API test result:', testResult);
+      
+      if (testResult.success) {
+        setApiStatus('ready');
+        console.log('[PopupTab] ✅ API ready for customer search');
+      } else {
+        setApiStatus('error');
+        console.error('[PopupTab] ❌ API connection failed:', testResult.error);
+      }
+    } catch (error) {
+      setApiStatus('error');
+      console.error('[PopupTab] ❌ API status check error:', error);
+    }
+  };
 
   // Feedback handlers
   const showFeedback = useCallback((type: string, message: string, duration = FEEDBACK_DURATION.DEFAULT) => {
@@ -318,21 +460,33 @@ export default function PopupTab({ value }: PopupTabProps) {
   const showSuccess = useCallback((message: string) => showFeedback('success', message, FEEDBACK_DURATION.SUCCESS), [showFeedback]);
   const showError = useCallback((message: string) => showFeedback('error', message), [showFeedback]);
 
-  // IMPROVED: Real-time search with better logic
+  // IMPROVED: Real API search with local customers fallback
   const performSearch = useCallback(async (query: string) => {
-    if (!query || query.trim().length < 2) {
+    console.log('[PopupTab] 🔍 Performing search for:', query);
+    
+    // Cancel previous search
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+    }
+    
+    // Allow single character searches for immediate response
+    if (!query || query.trim().length < 1) {
       setSearchResults([]);
       setShowDropdown(false);
+      setIsSearching(false);
       return;
     }
 
+    // Create new abort controller
+    searchAbortRef.current = new AbortController();
+    
     setIsSearching(true);
     setShowDropdown(true);
 
     try {
       const cleanedQuery = query.trim();
       
-      // First, search in local customers
+      // First, search in local customers IMMEDIATELY
       const localMatches = customers.filter(customer => {
         // Phone number matching
         if (/^\d/.test(cleanedQuery)) {
@@ -347,15 +501,34 @@ export default function PopupTab({ value }: PopupTabProps) {
         );
       });
 
-      // Then search API if needed
+      console.log('[PopupTab] 📱 Local matches found:', localMatches.length);
+
+      // API search if API is ready
       let apiResults = [];
-      try {
-        const response = await appKitApi.searchCustomers(cleanedQuery);
-        if (response.success && response.data) {
-          apiResults = response.data;
+      if (apiStatus === 'ready') {
+        try {
+          console.log('[PopupTab] 🚀 Calling API search...');
+          const response = await appKitApi.searchCustomersImmediate(cleanedQuery, {
+            limit: 10
+          });
+          
+          if (response.success && response.data) {
+            // Convert API customers to standard format
+            apiResults = response.data.map(apiCustomer => 
+              convertApiCustomerToStandardCustomer(apiCustomer, false)
+            );
+            console.log('[PopupTab] ✅ API search completed:', apiResults.length, 'results');
+          } else {
+            console.warn('[PopupTab] ⚠️ API search returned no results:', response.error);
+          }
+        } catch (apiError) {
+          if (apiError.name !== 'AbortError') {
+            console.error('[PopupTab] ❌ API search error:', apiError);
+            setApiStatus('error');
+          }
         }
-      } catch (apiError) {
-        console.error('API search error:', apiError);
+      } else {
+        console.log('[PopupTab] ⏭️ Skipping API search - status:', apiStatus);
       }
 
       // Create map of existing customers for duplicate detection
@@ -411,28 +584,39 @@ export default function PopupTab({ value }: PopupTabProps) {
         if (bPhone.startsWith(cleanQuery) && !aPhone.startsWith(cleanQuery)) return 1;
 
         // Then alphabetical by name
-        const aName = (a.customer_name || a.name || '').toLowerCase();
-        const bName = (b.customer_name || b.name || '').toLowerCase();
+        const aName = (a.name || '').toLowerCase();
+        const bName = (b.name || '').toLowerCase();
         return aName.localeCompare(bName);
       });
 
-      setSearchResults(sortedResults.slice(0, 10)); // Limit to 10 results
+      const finalResults = sortedResults.slice(0, 10); // Limit to 10 results
+      setSearchResults(finalResults);
       
-      if (sortedResults.length > 0) {
+      console.log('[PopupTab] 📊 Final results:', {
+        local: localMatches.length,
+        api: apiResults.length,
+        combined: finalResults.length
+      });
+      
+      if (finalResults.length > 0) {
         setRecentSearches(prev => {
           const updated = [query, ...prev.filter(s => s !== query)].slice(0, 5);
           return updated;
         });
       }
     } catch (error) {
-      console.error('Search error:', error);
-      setSearchResults([]);
+      if (error.name !== 'AbortError') {
+        console.error('[PopupTab] ❌ Search error:', error);
+        setSearchResults([]);
+      }
     } finally {
-      setIsSearching(false);
+      if (!searchAbortRef.current?.signal.aborted) {
+        setIsSearching(false);
+      }
     }
-  }, [customers]);
+  }, [customers, apiStatus]);
 
-  // Handle search input change with debouncing
+  // Handle search input change with REDUCED debouncing for immediate feel
   const handleSearchChange = useCallback((e) => {
     const query = e.target.value;
     setSearchQuery(query);
@@ -441,12 +625,13 @@ export default function PopupTab({ value }: PopupTabProps) {
       clearTimeout(searchTimeoutRef.current);
     }
 
+    // IMMEDIATE search for better UX
     searchTimeoutRef.current = setTimeout(() => {
       performSearch(query);
     }, SEARCH_DEBOUNCE_MS);
   }, [performSearch]);
 
-  // Handle search result selection with flat JSON support
+  // Handle search result selection
   const handleSelectSearchResult = useCallback(async (result) => {
     try {
       setShowDropdown(false);
@@ -456,7 +641,7 @@ export default function PopupTab({ value }: PopupTabProps) {
       // If customer is already downloaded, just select the existing one
       if (result.isDownloaded && result.existingCustomer) {
         setSelectedCustomer(result.existingCustomer);
-        showSuccess(`Selected ${result.customer_name || result.name} (already downloaded)`);
+        showSuccess(`Selected ${result.name} (already downloaded)`);
         return;
       }
 
@@ -468,33 +653,13 @@ export default function PopupTab({ value }: PopupTabProps) {
 
       setIsSearching(true);
 
-      // Convert flat JSON data to standard customer format
-      const customerData = convertToStandardCustomer(result, 'api');
-      
-      if (!customerData) {
-        showError('Failed to process customer data');
-        return;
-      }
-
-      const newCustomer: Customer = {
-        ...customerData,
-        id: result.id || `api_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        createdAt: Date.now(),
-      };
-
-      console.log('[PopupTab] Downloading customer with flat JSON data:', {
-        name: newCustomer.name,
-        originalDataKeys: Object.keys(newCustomer.originalData || {}),
-        dataSource: newCustomer.dataSource,
-        mappableFields: Object.keys(newCustomer.originalData || {}).length
-      });
-
-      const addResult = await addCustomer(newCustomer);
+      // Download API customer to local storage
+      const addResult = await addCustomer(result);
       
       if (addResult && addResult.success !== false) {
-        setSelectedCustomer(newCustomer);
-        const fieldCount = Object.keys(newCustomer.originalData || {}).length;
-        showSuccess(`Downloaded ${result.customer_name || result.name} - ${fieldCount} data fields available for mapping`);
+        setSelectedCustomer(result);
+        const fieldCount = Object.keys(result.originalData || {}).length;
+        showSuccess(`Downloaded ${result.name} - ${fieldCount} data fields available`);
       } else {
         showError(addResult?.error || 'Failed to save customer locally');
       }
@@ -610,6 +775,61 @@ export default function PopupTab({ value }: PopupTabProps) {
     }
   }, [selectedCustomer, selectedTemplate, aiSuggestMode, showError, showSuccess]);
 
+  // API configuration
+  const handleConfigureApi = useCallback(() => {
+    // This could open a configuration modal or redirect to settings
+    showFeedback('info', 'API configuration needed. Please configure base URL and ensure login.');
+  }, [showFeedback]);
+
+  // Debug API connection
+  const handleDebugApi = useCallback(() => {
+    console.log('=== MANUAL API DEBUG ===');
+    
+    // Check localStorage
+    const appKitToken = localStorage.getItem('cyepro_appkit_token');
+    const appKitSettings = localStorage.getItem('appkit_settings');
+    const supabaseToken = localStorage.getItem('supabase.auth.token');
+    
+    console.log('1. Tokens in localStorage:');
+    console.log('   - Supabase:', supabaseToken ? 'EXISTS' : 'MISSING');
+    console.log('   - AppKit:', appKitToken ? 'EXISTS' : 'MISSING');
+    console.log('   - Settings:', appKitSettings ? 'EXISTS' : 'MISSING');
+    
+    if (appKitToken) {
+      try {
+        const tokenData = JSON.parse(appKitToken);
+        console.log('2. AppKit Token Details:');
+        console.log('   - Has token:', !!tokenData.token);
+        console.log('   - Stored at:', tokenData.storedAt);
+        console.log('   - Expires at:', tokenData.expires_at);
+        if (tokenData.token) {
+          console.log('   - Token preview:', `${tokenData.token.substring(0, 20)}...`);
+        }
+      } catch (error) {
+        console.error('2. Error parsing AppKit token:', error);
+      }
+    }
+    
+    // Check API config
+    const config = appKitApi.getConfig();
+    console.log('3. API Configuration:');
+    console.log('   - Base URL:', config.baseUrl);
+    console.log('   - Has Token:', config.hasToken);
+    console.log('   - Is Ready:', appKitApi.isReady());
+    
+    // Try connection test
+    console.log('4. Testing connection...');
+    appKitApi.testConnection().then(result => {
+      console.log('   - Test result:', result);
+    }).catch(error => {
+      console.error('   - Test error:', error);
+    });
+    
+    console.log('=== END DEBUG ===');
+    
+    showFeedback('info', 'Debug info logged to console (F12)');
+  }, [showFeedback]);
+
   // Computed values
   const canAutoFill = useMemo(() => {
     return selectedCustomer && selectedTemplate;
@@ -633,18 +853,38 @@ export default function PopupTab({ value }: PopupTabProps) {
           <CardTitle className="flex items-center gap-2 text-base">
             <Users className="w-4 h-4" />
             Customer AutoFill
+            
+            {/* API Status Indicator */}
+            <div className="ml-auto flex items-center gap-1 text-xs">
+              {apiStatus === 'ready' ? (
+                <>
+                  <Wifi className="w-3 h-3 text-green-500" />
+                  <span className="text-green-600">API Ready</span>
+                </>
+              ) : apiStatus === 'error' ? (
+                <>
+                  <WifiOff className="w-3 h-3 text-red-500" />
+                  <span className="text-red-600">API Error</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3 h-3 text-gray-500" />
+                  <span className="text-gray-500">API Not Ready</span>
+                </>
+              )}
+            </div>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           
-          {/* Real-time Search with Dropdown */}
+          {/* Real-time Search with Enhanced Dropdown */}
           <div className="space-y-2" ref={dropdownRef}>
             <div className="relative">
               <div className="relative">
                 <Phone className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
                   ref={searchInputRef}
-                  placeholder="Search customers by phone/name/email..."
+                  placeholder="Search customers by phone/name/email... (live API search)"
                   value={searchQuery}
                   onChange={handleSearchChange}
                   className="pl-10 pr-10"
@@ -664,9 +904,16 @@ export default function PopupTab({ value }: PopupTabProps) {
                     <X className="w-4 h-4" />
                   </button>
                 )}
+                
+                {/* Loading indicator in input */}
+                {isSearching && (
+                  <div className="absolute right-8 top-1/2 transform -translate-y-1/2">
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                  </div>
+                )}
               </div>
 
-              {/* Real-time Search Dropdown */}
+              {/* Enhanced Real-time Search Dropdown */}
               <SearchDropdown
                 searchResults={searchResults}
                 isSearching={isSearching}
@@ -674,6 +921,7 @@ export default function PopupTab({ value }: PopupTabProps) {
                 searchQuery={searchQuery}
                 isOpen={showDropdown}
                 onClose={() => setShowDropdown(false)}
+                apiStatus={apiStatus}
               />
             </div>
 
@@ -724,7 +972,7 @@ export default function PopupTab({ value }: PopupTabProps) {
             )}
           </div>
 
-          {/* Selected Customer - Enhanced for flat JSON */}
+          {/* Selected Customer - Enhanced for API data */}
           {selectedCustomer && (
             <div className="p-3 bg-muted/30 rounded border">
               <div className="flex items-center justify-between mb-2">
@@ -748,8 +996,8 @@ export default function PopupTab({ value }: PopupTabProps) {
                 </Button>
               </div>
               
-              {/* Data Source Badge */}
-              <div className="flex gap-1 mb-2">
+              {/* Enhanced Data Source Badges */}
+              <div className="flex gap-1 mb-2 flex-wrap">
                 <Badge 
                   variant="outline" 
                   className={`text-xs ${
@@ -758,7 +1006,7 @@ export default function PopupTab({ value }: PopupTabProps) {
                     'bg-gray-50 text-gray-700 border-gray-200'
                   }`}
                 >
-                  {selectedCustomer.dataSource === 'api' ? '🌐 Downloaded' :
+                  {selectedCustomer.dataSource === 'api' ? '🌐 API' :
                    selectedCustomer.dataSource === 'json' ? '📄 JSON' :
                    '✏️ Manual'}
                 </Badge>
@@ -788,20 +1036,20 @@ export default function PopupTab({ value }: PopupTabProps) {
                   <div>🏢 {selectedCustomer.company}</div>
                 )}
 
-                {/* Enhanced info for flat JSON structure */}
+                {/* Enhanced info for API data */}
                 {selectedCustomer.originalData && (
                   <div className="space-y-1 text-xs text-blue-600">
                     {selectedCustomer.originalData.occupation && (
                       <div>👨‍💼 {selectedCustomer.originalData.occupation}</div>
                     )}
-                    {selectedCustomer.originalData.vehicle_model && (
-                      <div>🚗 {selectedCustomer.originalData.vehicle_model}</div>
+                    {(selectedCustomer.originalData.vehicle_model_interest || selectedCustomer.originalData.vehicle_model) && (
+                      <div>🚗 {selectedCustomer.originalData.vehicle_model_interest || selectedCustomer.originalData.vehicle_model}</div>
                     )}
-                    {selectedCustomer.originalData.budget_range && (
-                      <div>💰 {selectedCustomer.originalData.budget_range}</div>
+                    {(selectedCustomer.originalData.budget_range || selectedCustomer.originalData.budget_min) && (
+                      <div>💰 {selectedCustomer.originalData.budget_range || `${selectedCustomer.originalData.budget_min}-${selectedCustomer.originalData.budget_max}`}</div>
                     )}
-                    {selectedCustomer.originalData.purchase_timeline && (
-                      <div>📅 {selectedCustomer.originalData.purchase_timeline}</div>
+                    {selectedCustomer.originalData.sales_stage && (
+                      <div>📈 {selectedCustomer.originalData.sales_stage}</div>
                     )}
                   </div>
                 )}
@@ -908,6 +1156,43 @@ export default function PopupTab({ value }: PopupTabProps) {
             </div>
           )}
 
+          {/* API Status Actions */}
+          {apiStatus !== 'ready' && (
+            <div className="space-y-2">
+              <div className="text-xs text-center text-red-600 bg-red-50 rounded p-2">
+                ⚠️ API not connected - only local customers shown.
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  onClick={checkApiStatus}
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                >
+                  <Wifi className="w-3 h-3 mr-1" />
+                  Retry Connection
+                </Button>
+                <Button
+                  onClick={handleConfigureApi}
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                >
+                  <Settings className="w-3 h-3 mr-1" />
+                  Configure API
+                </Button>
+              </div>
+              <Button
+                onClick={handleDebugApi}
+                variant="outline"
+                size="sm"
+                className="w-full"
+              >
+                🔍 Debug API (Check Console)
+              </Button>
+            </div>
+          )}
+
           {/* Feedback */}
           {feedback && (
             <Alert variant={feedback.type === 'success' ? 'default' : 'destructive'} className="py-2">
@@ -921,10 +1206,12 @@ export default function PopupTab({ value }: PopupTabProps) {
           )}
 
           {/* Getting started guidance */}
-          {customers.length === 0 && (
+          {customers.length === 0 && apiStatus !== 'ready' && (
             <div className="text-center text-xs text-muted-foreground bg-blue-50 rounded p-3">
-              <div className="mb-2">No customers downloaded yet</div>
+              <div className="mb-2">Getting started with API integration</div>
               <div className="space-y-1">
+                <div>• Make sure you're logged in to get API access</div>
+                <div>• Configure API base URL in settings if needed</div>
                 <div>• Search by phone/name to find customers</div>
                 <div>• Click on search results to download them</div>
                 <div>• Downloaded customers have rich data for mapping</div>
@@ -934,7 +1221,7 @@ export default function PopupTab({ value }: PopupTabProps) {
 
           {templates.length === 0 && customers.length > 0 && (
             <div className="text-center text-xs text-muted-foreground bg-yellow-50 rounded p-3">
-              <div className="mb-2">No templates found</div>
+              <div className="mb-2">Templates needed</div>
               <div className="text-xs">Use the AI Scan tab to create form templates</div>
             </div>
           )}

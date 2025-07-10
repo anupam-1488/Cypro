@@ -1,8 +1,17 @@
 // features/shared/services/appKitApi.ts
 /**
- * Enhanced AppKit API Service
- * Provides improved customer search functionality with better error handling
+ * Real AppKit API Service - Customer Management Integration
+ * Integrates with the actual customer management API
  */
+
+import { 
+  getApiConfig, 
+  validateApiConfig, 
+  ERROR_MESSAGES, 
+  SUCCESS_MESSAGES,
+  SEARCH_CONFIG,
+  VALIDATION_RULES 
+} from '../config/apiConfig';
 
 interface SearchResponse {
   success: boolean;
@@ -11,53 +20,445 @@ interface SearchResponse {
   total?: number;
   page?: number;
   hasMore?: boolean;
+  message?: string;
+  timestamp?: string;
+  feature?: string;
 }
 
 interface Customer {
   id: string;
-  customer_name?: string;
-  name?: string;
-  phone?: string;
-  mobile?: string;
+  name: string;
   email?: string;
-  company_name?: string;
-  address?: string;
-  city?: string;
-  state?: string;
-  pincode?: string;
-  occupation?: string;
-  vehicle_model?: string;
-  budget_range?: string;
-  purchase_timeline?: string;
+  phone?: string;
+  custom_fields?: Record<string, any>;
   scope?: 'own' | 'tenant' | 'org';
+  tenant_id?: string;
+  created_by?: string;
+  active?: boolean;
   created_at?: string;
   updated_at?: string;
-  [key: string]: any;
+}
+
+interface ApiConfig {
+  baseUrl: string;
+  timeout: number;
 }
 
 class AppKitApi {
-  private baseUrl: string = '';
-  private apiKey: string = '';
-  private timeout: number = 10000; // 10 seconds
+  private config: ApiConfig;
 
   constructor() {
-    // Initialize API settings
+    // Load configuration from constants
+    const apiConfig = getApiConfig();
+    this.config = {
+      baseUrl: apiConfig.BASE_URL,
+      timeout: apiConfig.TIMEOUT,
+    };
+    
+    // Also try to load from localStorage (for user overrides)
     this.loadSettings();
   }
 
   private loadSettings() {
     try {
-      // Load API settings from storage or environment
       if (typeof window !== 'undefined' && window.localStorage) {
         const stored = window.localStorage.getItem('appkit_settings');
         if (stored) {
           const settings = JSON.parse(stored);
-          this.baseUrl = settings.baseUrl || '';
-          this.apiKey = settings.apiKey || '';
+          // Override with user settings if available
+          if (settings.baseUrl) {
+            this.config.baseUrl = settings.baseUrl;
+          }
+          if (settings.timeout) {
+            this.config.timeout = settings.timeout;
+          }
         }
       }
     } catch (error) {
       console.warn('[AppKitApi] Error loading settings:', error);
+    }
+  }
+
+  /**
+   * Get AppKit authorization headers
+   */
+  private getAuthHeaders(): Record<string, string> {
+    try {
+      const tokenData = this.getStoredAppKitToken();
+      if (!tokenData || !tokenData.token) {
+        throw new Error('No valid AppKit token available');
+      }
+
+      return {
+        'Authorization': `Bearer ${tokenData.token}`,
+        'Content-Type': 'application/json',
+        'X-Client-Info': 'browser-extension'
+      };
+    } catch (error) {
+      console.error('[AppKitApi] Error getting auth headers:', error);
+      throw new Error('Authentication required');
+    }
+  }
+
+  /**
+   * Get stored AppKit token
+   */
+  private getStoredAppKitToken(): any {
+    try {
+      if (typeof window === 'undefined') {
+        console.warn('[AppKitApi] No window object available');
+        return null;
+      }
+      
+      const stored = window.localStorage.getItem('cyepro_appkit_token');
+      console.log('[AppKitApi] Token lookup - exists:', !!stored);
+      
+      if (!stored) {
+        console.log('[AppKitApi] No token found in localStorage');
+        return null;
+      }
+      
+      const tokenInfo = JSON.parse(stored);
+      console.log('[AppKitApi] Token info:', {
+        hasToken: !!tokenInfo.token,
+        hasExpiration: !!tokenInfo.expires_at,
+        storedAt: tokenInfo.storedAt
+      });
+      
+      // Check if token has expired
+      if (tokenInfo.expires_at) {
+        const expiresAt = new Date(tokenInfo.expires_at);
+        const now = new Date();
+        if (expiresAt <= now) {
+          console.log('[AppKitApi] Stored token has expired:', expiresAt, 'vs', now);
+          this.clearAppKitToken();
+          return null;
+        }
+      }
+      
+      return tokenInfo;
+    } catch (error) {
+      console.error('[AppKitApi] Error getting stored token:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Clear AppKit token
+   */
+  private clearAppKitToken() {
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem('cyepro_appkit_token');
+        console.log('[AppKitApi] Token cleared');
+      }
+    } catch (error) {
+      console.error('[AppKitApi] Error clearing token:', error);
+    }
+  }
+
+  /**
+   * Make authenticated API request
+   */
+  private async makeRequest(endpoint: string, options: RequestInit = {}): Promise<SearchResponse> {
+    try {
+      if (!this.config.baseUrl) {
+        console.error('[AppKitApi] No base URL configured');
+        return {
+          success: false,
+          error: 'API base URL not configured. Please check your settings.'
+        };
+      }
+
+      if (this.config.baseUrl === 'https://your-api-domain.com') {
+        console.error('[AppKitApi] Base URL not updated from default');
+        return {
+          success: false,
+          error: 'API base URL still set to default. Please configure your actual API URL.'
+        };
+      }
+
+      const url = `${this.config.baseUrl}${endpoint}`;
+      console.log('[AppKitApi] Making request to:', url);
+
+      let headers;
+      try {
+        headers = this.getAuthHeaders();
+        console.log('[AppKitApi] Auth headers prepared successfully');
+      } catch (authError) {
+        console.error('[AppKitApi] Auth headers error:', authError);
+        return {
+          success: false,
+          error: authError.message || 'Authentication required'
+        };
+      }
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
+      
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...headers,
+          ...options.headers
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      console.log('[AppKitApi] Response status:', response.status, response.statusText);
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          console.error('[AppKitApi] Authentication failed - clearing token');
+          this.clearAppKitToken();
+          return {
+            success: false,
+            error: 'Authentication failed. Please login again.'
+          };
+        }
+
+        if (response.status === 403) {
+          return {
+            success: false,
+            error: 'Access denied. Insufficient permissions.'
+          };
+        }
+
+        if (response.status === 429) {
+          return {
+            success: false,
+            error: 'Rate limit exceeded. Please try again later.'
+          };
+        }
+
+        let errorText = '';
+        try {
+          errorText = await response.text();
+        } catch (textError) {
+          errorText = 'Unknown error';
+        }
+        
+        console.error('[AppKitApi] HTTP error:', response.status, errorText);
+        return {
+          success: false,
+          error: `API request failed: ${response.status} ${response.statusText}. ${errorText}`
+        };
+      }
+
+      const data = await response.json();
+      console.log('[AppKitApi] Response data:', data);
+      
+      // Handle the API response format from documentation
+      if (data.success === false) {
+        return {
+          success: false,
+          error: data.error || data.message || 'API request failed'
+        };
+      }
+
+      return {
+        success: true,
+        data: data.data || [],
+        message: data.message,
+        timestamp: data.timestamp,
+        feature: data.feature
+      };
+
+    } catch (error) {
+      console.error('[AppKitApi] Request error:', error);
+      
+      if (error.name === 'AbortError') {
+        return {
+          success: false,
+          error: 'Request timeout. Please try again.'
+        };
+      }
+
+      return {
+        success: false,
+        error: error.message || 'Network error. Please check your connection.'
+      };
+    }
+  }
+
+  /**
+   * Get all customers (with role-based filtering)
+   */
+  async getAllCustomers(): Promise<SearchResponse> {
+    console.log('[AppKitApi] Getting all customers...');
+    return this.makeRequest('/api/customers');
+  }
+
+  /**
+   * Search customers by query (phone, name, email)
+   */
+  async searchCustomers(query: string, options: {
+    limit?: number;
+    page?: number;
+    filters?: Record<string, any>;
+  } = {}): Promise<SearchResponse> {
+    try {
+      console.log('[AppKitApi] Searching customers with query:', query);
+      
+      if (!query || query.trim().length < 1) {
+        return {
+          success: false,
+          error: 'Search query is required'
+        };
+      }
+
+      // First get all customers
+      const allCustomersResponse = await this.getAllCustomers();
+      
+      if (!allCustomersResponse.success) {
+        return allCustomersResponse;
+      }
+
+      const allCustomers = allCustomersResponse.data || [];
+      const cleanQuery = query.trim().toLowerCase();
+      
+      // Filter customers based on search query
+      let filteredCustomers = allCustomers;
+
+      // Check if query looks like a phone number
+      const isPhoneSearch = /^\d/.test(cleanQuery);
+      
+      if (isPhoneSearch) {
+        // Phone number search - normalize and match
+        const normalizedQuery = this.normalizePhoneNumber(cleanQuery);
+        filteredCustomers = allCustomers.filter((customer: Customer) => {
+          const customerPhone = this.normalizePhoneNumber(customer.phone || '');
+          return customerPhone.includes(normalizedQuery) || 
+                 customerPhone.startsWith(normalizedQuery) ||
+                 (customer.custom_fields?.alternate_phone && 
+                  this.normalizePhoneNumber(customer.custom_fields.alternate_phone).includes(normalizedQuery));
+        });
+      } else {
+        // Text search - name, email, company
+        filteredCustomers = allCustomers.filter((customer: Customer) => {
+          const searchableFields = [
+            customer.name,
+            customer.email,
+            customer.custom_fields?.company_name,
+            customer.custom_fields?.occupation,
+            customer.custom_fields?.city
+          ].filter(Boolean).map(field => field.toLowerCase());
+          
+          return searchableFields.some(field => 
+            field.includes(cleanQuery) || cleanQuery.includes(field)
+          );
+        });
+      }
+
+      // Apply pagination
+      const { limit = 20, page = 1 } = options;
+      const startIndex = (page - 1) * limit;
+      const endIndex = startIndex + limit;
+      const paginatedResults = filteredCustomers.slice(startIndex, endIndex);
+
+      console.log(`[AppKitApi] Found ${filteredCustomers.length} customers, returning ${paginatedResults.length}`);
+
+      return {
+        success: true,
+        data: paginatedResults,
+        total: filteredCustomers.length,
+        page: page,
+        hasMore: endIndex < filteredCustomers.length
+      };
+
+    } catch (error) {
+      console.error('[AppKitApi] Search error:', error);
+      return {
+        success: false,
+        error: error.message || 'Search failed'
+      };
+    }
+  }
+
+  /**
+   * Immediate search for real-time results
+   */
+  async searchCustomersImmediate(query: string, options: {
+    limit?: number;
+  } = {}): Promise<SearchResponse> {
+    console.log('[AppKitApi] Immediate search for:', query);
+    return this.searchCustomers(query, { ...options, page: 1 });
+  }
+
+  /**
+   * Get customer by ID
+   */
+  async getCustomerById(customerId: string): Promise<SearchResponse> {
+    try {
+      console.log('[AppKitApi] Getting customer by ID:', customerId);
+      return this.makeRequest(`/api/customers/${customerId}`);
+    } catch (error) {
+      console.error('[AppKitApi] Get customer error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to get customer'
+      };
+    }
+  }
+
+  /**
+   * Create new customer
+   */
+  async createCustomer(customerData: Omit<Customer, 'id' | 'created_at' | 'updated_at'>): Promise<SearchResponse> {
+    try {
+      console.log('[AppKitApi] Creating customer:', customerData.name);
+      
+      return this.makeRequest('/api/customers', {
+        method: 'POST',
+        body: JSON.stringify(customerData)
+      });
+    } catch (error) {
+      console.error('[AppKitApi] Create customer error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to create customer'
+      };
+    }
+  }
+
+  /**
+   * Update customer data
+   */
+  async updateCustomer(customerId: string, updates: Partial<Customer>): Promise<SearchResponse> {
+    try {
+      console.log('[AppKitApi] Updating customer:', customerId);
+      
+      return this.makeRequest(`/api/customers/${customerId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updates)
+      });
+    } catch (error) {
+      console.error('[AppKitApi] Update customer error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to update customer'
+      };
+    }
+  }
+
+  /**
+   * Delete customer (soft delete)
+   */
+  async deleteCustomer(customerId: string): Promise<SearchResponse> {
+    try {
+      console.log('[AppKitApi] Deleting customer:', customerId);
+      
+      return this.makeRequest(`/api/customers/${customerId}`, {
+        method: 'DELETE'
+      });
+    } catch (error) {
+      console.error('[AppKitApi] Delete customer error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to delete customer'
+      };
     }
   }
 
@@ -83,349 +484,39 @@ class AppKitApi {
   }
 
   /**
-   * Enhanced customer search with better filtering and error handling
-   */
-  async searchCustomers(query: string, options: {
-    limit?: number;
-    page?: number;
-    filters?: Record<string, any>;
-  } = {}): Promise<SearchResponse> {
-    try {
-      console.log('[AppKitApi] Searching customers with query:', query);
-      
-      if (!query || query.trim().length < 2) {
-        return {
-          success: false,
-          error: 'Search query must be at least 2 characters'
-        };
-      }
-
-      const { limit = 20, page = 1, filters = {} } = options;
-      const cleanQuery = query.trim();
-      
-      // Determine search type
-      const isPhoneSearch = /^\d/.test(cleanQuery);
-      const normalizedPhone = this.normalizePhoneNumber(cleanQuery);
-      
-      // Create search parameters
-      const searchParams = new URLSearchParams({
-        q: cleanQuery,
-        limit: limit.toString(),
-        page: page.toString(),
-        ...(isPhoneSearch && { phone: normalizedPhone }),
-        ...filters
-      });
-
-      // Mock API response for development
-      // In production, replace this with actual API call
-      const mockCustomers: Customer[] = [
-        {
-          id: '1',
-          customer_name: 'John Doe',
-          phone: '9876543210',
-          email: 'john.doe@example.com',
-          company_name: 'Tech Solutions Ltd',
-          address: '123 Main Street',
-          city: 'Mumbai',
-          state: 'Maharashtra',
-          pincode: '400001',
-          occupation: 'Software Engineer',
-          vehicle_model: 'Honda City',
-          budget_range: '10-15 Lakhs',
-          purchase_timeline: 'Within 3 months',
-          scope: 'own',
-          created_at: '2024-01-15T10:30:00Z',
-          updated_at: '2024-01-20T15:45:00Z'
-        },
-        {
-          id: '2',
-          customer_name: 'Jane Smith',
-          phone: '9123456789',
-          email: 'jane.smith@company.com',
-          company_name: 'Marketing Pro',
-          address: '456 Business Park',
-          city: 'Delhi',
-          state: 'Delhi',
-          pincode: '110001',
-          occupation: 'Marketing Manager',
-          vehicle_model: 'Hyundai Creta',
-          budget_range: '15-20 Lakhs',
-          purchase_timeline: 'Within 6 months',
-          scope: 'tenant',
-          created_at: '2024-01-10T08:15:00Z',
-          updated_at: '2024-01-25T12:30:00Z'
-        },
-        {
-          id: '3',
-          customer_name: 'Rajesh Kumar',
-          phone: '9988776655',
-          email: 'rajesh.kumar@gmail.com',
-          company_name: 'Rajesh Enterprises',
-          address: '789 Industrial Area',
-          city: 'Bangalore',
-          state: 'Karnataka',
-          pincode: '560001',
-          occupation: 'Business Owner',
-          vehicle_model: 'Toyota Innova',
-          budget_range: '25-30 Lakhs',
-          purchase_timeline: 'Within 1 month',
-          scope: 'own',
-          created_at: '2024-01-05T14:20:00Z',
-          updated_at: '2024-01-22T09:10:00Z'
-        },
-        {
-          id: '4',
-          customer_name: 'Priya Sharma',
-          phone: '9234567890',
-          email: 'priya.sharma@techcorp.com',
-          company_name: 'TechCorp Solutions',
-          address: '321 Tech Park',
-          city: 'Pune',
-          state: 'Maharashtra',
-          pincode: '411001',
-          occupation: 'Project Manager',
-          vehicle_model: 'Maruti Swift',
-          budget_range: '8-12 Lakhs',
-          purchase_timeline: 'Within 2 months',
-          scope: 'tenant',
-          created_at: '2024-01-12T11:45:00Z',
-          updated_at: '2024-01-28T16:20:00Z'
-        },
-        {
-          id: '5',
-          customer_name: 'Amit Patel',
-          phone: '9876543211',
-          email: 'amit.patel@startup.in',
-          company_name: 'Innovation Hub',
-          address: '654 Startup Street',
-          city: 'Ahmedabad',
-          state: 'Gujarat',
-          pincode: '380001',
-          occupation: 'Startup Founder',
-          vehicle_model: 'BMW 3 Series',
-          budget_range: '40-50 Lakhs',
-          purchase_timeline: 'Within 4 months',
-          scope: 'own',
-          created_at: '2024-01-08T13:30:00Z',
-          updated_at: '2024-01-26T10:15:00Z'
-        }
-      ];
-
-      // Filter mock customers based on search query
-      let filteredCustomers = mockCustomers;
-
-      if (isPhoneSearch) {
-        // Phone number search - partial matching
-        filteredCustomers = mockCustomers.filter(customer => {
-          const customerPhone = this.normalizePhoneNumber(customer.phone || '');
-          return customerPhone.includes(normalizedPhone) || customerPhone.startsWith(normalizedPhone);
-        });
-      } else {
-        // Text search - name, email, company
-        const lowerQuery = cleanQuery.toLowerCase();
-        filteredCustomers = mockCustomers.filter(customer => {
-          const searchableFields = [
-            customer.customer_name,
-            customer.name,
-            customer.email,
-            customer.company_name,
-            customer.city,
-            customer.occupation
-          ].filter(Boolean).map(field => field.toLowerCase());
-          
-          return searchableFields.some(field => 
-            field.includes(lowerQuery) || lowerQuery.includes(field)
-          );
-        });
-      }
-
-      // Apply pagination
-      const startIndex = (page - 1) * limit;
-      const endIndex = startIndex + limit;
-      const paginatedResults = filteredCustomers.slice(startIndex, endIndex);
-
-      console.log(`[AppKitApi] Found ${filteredCustomers.length} customers, returning ${paginatedResults.length}`);
-
-      return {
-        success: true,
-        data: paginatedResults,
-        total: filteredCustomers.length,
-        page: page,
-        hasMore: endIndex < filteredCustomers.length
-      };
-
-    } catch (error) {
-      console.error('[AppKitApi] Search error:', error);
-      return {
-        success: false,
-        error: error.message || 'Search failed'
-      };
-    }
-  }
-
-  /**
-   * Get customer by ID
-   */
-  async getCustomerById(customerId: string): Promise<SearchResponse> {
-    try {
-      console.log('[AppKitApi] Getting customer by ID:', customerId);
-      
-      // Mock implementation
-      // In production, make actual API call
-      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API delay
-      
-      return {
-        success: false,
-        error: 'Customer not found'
-      };
-    } catch (error) {
-      console.error('[AppKitApi] Get customer error:', error);
-      return {
-        success: false,
-        error: error.message || 'Failed to get customer'
-      };
-    }
-  }
-
-  /**
-   * Update customer data
-   */
-  async updateCustomer(customerId: string, data: Partial<Customer>): Promise<SearchResponse> {
-    try {
-      console.log('[AppKitApi] Updating customer:', customerId, data);
-      
-      // Mock implementation
-      // In production, make actual API call
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate API delay
-      
-      return {
-        success: true,
-        data: [{ ...data, id: customerId, updated_at: new Date().toISOString() }]
-      };
-    } catch (error) {
-      console.error('[AppKitApi] Update customer error:', error);
-      return {
-        success: false,
-        error: error.message || 'Failed to update customer'
-      };
-    }
-  }
-
-  /**
-   * Create new customer
-   */
-  async createCustomer(data: Omit<Customer, 'id' | 'created_at' | 'updated_at'>): Promise<SearchResponse> {
-    try {
-      console.log('[AppKitApi] Creating customer:', data);
-      
-      // Mock implementation
-      // In production, make actual API call
-      await new Promise(resolve => setTimeout(resolve, 800)); // Simulate API delay
-      
-      const newCustomer = {
-        ...data,
-        id: `customer_${Date.now()}`,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-      
-      return {
-        success: true,
-        data: [newCustomer]
-      };
-    } catch (error) {
-      console.error('[AppKitApi] Create customer error:', error);
-      return {
-        success: false,
-        error: error.message || 'Failed to create customer'
-      };
-    }
-  }
-
-  /**
-   * Delete customer
-   */
-  async deleteCustomer(customerId: string): Promise<SearchResponse> {
-    try {
-      console.log('[AppKitApi] Deleting customer:', customerId);
-      
-      // Mock implementation
-      // In production, make actual API call
-      await new Promise(resolve => setTimeout(resolve, 600)); // Simulate API delay
-      
-      return {
-        success: true,
-        data: []
-      };
-    } catch (error) {
-      console.error('[AppKitApi] Delete customer error:', error);
-      return {
-        success: false,
-        error: error.message || 'Failed to delete customer'
-      };
-    }
-  }
-
-  /**
-   * Get customer statistics
-   */
-  async getCustomerStats(): Promise<SearchResponse> {
-    try {
-      console.log('[AppKitApi] Getting customer statistics');
-      
-      // Mock implementation
-      const stats = {
-        total: 150,
-        own: 85,
-        tenant: 45,
-        org: 20,
-        recent: 25,
-        withData: 120
-      };
-      
-      return {
-        success: true,
-        data: [stats]
-      };
-    } catch (error) {
-      console.error('[AppKitApi] Get stats error:', error);
-      return {
-        success: false,
-        error: error.message || 'Failed to get statistics'
-      };
-    }
-  }
-
-  /**
    * Validate customer data
    */
   validateCustomerData(data: Partial<Customer>): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
     
-    // Required fields validation
-    if (!data.customer_name && !data.name) {
-      errors.push('Customer name is required');
+    // Name is required
+    if (!data.name || data.name.trim().length < 2) {
+      errors.push('Customer name is required (min 2 characters)');
     }
     
-    if (!data.phone && !data.mobile) {
-      errors.push('Phone number is required');
+    if (data.name && data.name.length > 255) {
+      errors.push('Customer name too long (max 255 characters)');
     }
     
-    // Phone number format validation
-    const phone = data.phone || data.mobile || '';
-    if (phone) {
-      const normalizedPhone = this.normalizePhoneNumber(phone);
-      if (normalizedPhone.length < 10 || normalizedPhone.length > 12) {
-        errors.push('Phone number must be 10-12 digits');
-      }
-    }
-    
-    // Email format validation
+    // Email validation
     if (data.email) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(data.email)) {
         errors.push('Invalid email format');
       }
+    }
+    
+    // Phone validation
+    if (data.phone) {
+      const normalizedPhone = this.normalizePhoneNumber(data.phone);
+      if (normalizedPhone.length < 10 || normalizedPhone.length > 12) {
+        errors.push('Phone number must be 10-12 digits');
+      }
+    }
+    
+    // Scope validation
+    if (data.scope && !['own', 'tenant', 'org'].includes(data.scope)) {
+      errors.push('Invalid scope. Must be own, tenant, or org');
     }
     
     return {
@@ -437,18 +528,19 @@ class AppKitApi {
   /**
    * Set API configuration
    */
-  setConfig(config: { baseUrl?: string; apiKey?: string; timeout?: number }) {
-    if (config.baseUrl) this.baseUrl = config.baseUrl;
-    if (config.apiKey) this.apiKey = config.apiKey;
-    if (config.timeout) this.timeout = config.timeout;
+  setConfig(config: { baseUrl?: string; timeout?: number }) {
+    if (config.baseUrl) this.config.baseUrl = config.baseUrl;
+    if (config.timeout) this.config.timeout = config.timeout;
     
     // Save to storage
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem('appkit_settings', JSON.stringify({
-          baseUrl: this.baseUrl,
-          apiKey: this.apiKey
-        }));
+        const currentSettings = JSON.parse(window.localStorage.getItem('appkit_settings') || '{}');
+        const newSettings = {
+          ...currentSettings,
+          baseUrl: this.config.baseUrl
+        };
+        window.localStorage.setItem('appkit_settings', JSON.stringify(newSettings));
       }
     } catch (error) {
       console.warn('[AppKitApi] Error saving settings:', error);
@@ -459,11 +551,28 @@ class AppKitApi {
    * Get current configuration
    */
   getConfig() {
+    const tokenData = this.getStoredAppKitToken();
     return {
-      baseUrl: this.baseUrl,
-      hasApiKey: !!this.apiKey,
-      timeout: this.timeout
+      baseUrl: this.config.baseUrl,
+      timeout: this.config.timeout,
+      hasToken: !!tokenData?.token
     };
+  }
+
+  /**
+   * Check if API is ready
+   */
+  isReady(): boolean {
+    const hasValidBaseUrl = !!(this.config.baseUrl && this.config.baseUrl !== 'https://your-api-domain.com');
+    const hasToken = !!this.getStoredAppKitToken()?.token;
+    
+    console.log('[AppKitApi] isReady check:', {
+      hasValidBaseUrl,
+      hasToken,
+      baseUrl: this.config.baseUrl
+    });
+    
+    return hasValidBaseUrl && hasToken;
   }
 
   /**
@@ -473,13 +582,54 @@ class AppKitApi {
     try {
       console.log('[AppKitApi] Testing connection...');
       
-      // Mock implementation
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Check configuration first
+      if (!this.config.baseUrl) {
+        return {
+          success: false,
+          error: 'API base URL not configured'
+        };
+      }
+
+      if (this.config.baseUrl === 'https://your-api-domain.com') {
+        return {
+          success: false,
+          error: 'API base URL still set to default placeholder'
+        };
+      }
+
+      // Check token
+      const tokenData = this.getStoredAppKitToken();
+      if (!tokenData || !tokenData.token) {
+        return {
+          success: false,
+          error: 'No authentication token available'
+        };
+      }
+
+      console.log('[AppKitApi] Configuration OK, testing API endpoint...');
+
+      // Test with a simple customers list request
+      const response = await this.makeRequest('/api/customers');
       
-      return {
-        success: true,
-        data: [{ status: 'connected', timestamp: Date.now() }]
-      };
+      if (response.success) {
+        console.log('[AppKitApi] Connection test successful');
+        return {
+          success: true,
+          data: [{ 
+            status: 'connected', 
+            timestamp: Date.now(), 
+            customers: response.data?.length || 0,
+            baseUrl: this.config.baseUrl
+          }],
+          message: 'API connection successful'
+        };
+      } else {
+        console.error('[AppKitApi] Connection test failed:', response.error);
+        return {
+          success: false,
+          error: response.error || 'Connection test failed'
+        };
+      }
     } catch (error) {
       console.error('[AppKitApi] Connection test error:', error);
       return {
